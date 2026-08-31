@@ -184,7 +184,7 @@ class CortexIndexer:
                 cat_normalized = category.lower().rstrip("s")
                 cursor.execute(
                     """
-                    SELECT raw_json, rank FROM fts_knowledge
+                    SELECT id, raw_json, rank FROM fts_knowledge
                     WHERE fts_knowledge MATCH ? AND type LIKE ?
                     ORDER BY rank ASC, id ASC
                     LIMIT ?
@@ -194,7 +194,7 @@ class CortexIndexer:
             else:
                 cursor.execute(
                     """
-                    SELECT raw_json, rank FROM fts_knowledge
+                    SELECT id, raw_json, rank FROM fts_knowledge
                     WHERE fts_knowledge MATCH ?
                     ORDER BY rank ASC, id ASC
                     LIMIT ?
@@ -205,6 +205,14 @@ class CortexIndexer:
             rows = cursor.fetchall()
             results: List[Dict[str, Any]] = []
             for row in rows:
+                item_id = row["id"]
+                # Canonical Read Rule: FTS -> Candidate ID -> Canonical File
+                if self.storage is not None:
+                    canonical_item = self.storage.read_knowledge(item_id)
+                    if canonical_item is not None:
+                        results.append(canonical_item.to_dict())
+                        continue
+                # Fallback to index snapshot if storage is not attached
                 try:
                     results.append(json.loads(row["raw_json"]))
                 except Exception:

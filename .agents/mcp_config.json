@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "cortex": {
+      "command": "python",
+      "args": ["-m", "cortex_engine.mcp_server"],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
