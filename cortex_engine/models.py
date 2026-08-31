@@ -108,12 +108,19 @@ class ContextPackage:
     """Layered context package separating stable prefix from dynamic suffix."""
     stable: dict[str, Any] | str
     dynamic: dict[str, Any] | str
+    role: Optional[str] = None
+    task_id: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "stable": self.stable,
             "dynamic": self.dynamic,
         }
+        if self.role is not None:
+            data["role"] = self.role
+        if self.task_id is not None:
+            data["task_id"] = self.task_id
+        return data
 
 
 @dataclass
@@ -129,6 +136,8 @@ class RoleContext:
         return ContextPackage(
             stable=self.stable_context,
             dynamic=self.dynamic_context,
+            role=self.role,
+            task_id=self.task_id,
         )
 
     def to_dict(self) -> dict[str, Any]:

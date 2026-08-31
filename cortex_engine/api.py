@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any, List, Optional
 
-from .models import Claim, ContextPackage, Event, Knowledge, RoleContext, RoleResult
+from .models import (
+    Claim,
+    ContextPackage,
+    Event,
+    Knowledge,
+    RoleContext,
+    RoleResult,
+    utc_now_iso,
+)
 from .storage import CortexStorage
 
 
@@ -16,16 +25,17 @@ class CortexAPI:
 
     def record_event(
         self,
-        id: str,
         event_type: str,
         role: str,
         payload: dict[str, Any],
+        id: Optional[str] = None,
         task_id: Optional[str] = None,
         provenance: Optional[dict[str, Any]] = None,
     ) -> str:
         """Record an observable event in append-only log."""
+        event_id = id or f"evt-{uuid.uuid4().hex[:8]}"
         event = Event(
-            id=id,
+            id=event_id,
             type=event_type,
             role=role,
             payload=payload,
@@ -46,6 +56,7 @@ class CortexAPI:
         related: Optional[List[str]] = None,
         affects: Optional[List[str]] = None,
         evidence: Optional[List[dict[str, Any]]] = None,
+        task_id: Optional[str] = None,
     ) -> str:
         """Record a persistent knowledge item (decision, constraint, failure, lesson)."""
         item = Knowledge(
@@ -60,7 +71,17 @@ class CortexAPI:
             affects=affects,
             evidence=evidence,
         )
-        return self.storage.write_knowledge(item)
+        persisted_id = self.storage.write_knowledge(item)
+
+        # Record observable knowledge capture event
+        self.record_event(
+            event_type="knowledge_recorded",
+            role="LEARNING",
+            payload={"knowledge_id": id, "type": knowledge_type, "title": title},
+            task_id=task_id,
+            provenance=provenance,
+        )
+        return persisted_id
 
     def record_claim(
         self,
@@ -70,6 +91,7 @@ class CortexAPI:
         artifact: Optional[dict[str, Any]] = None,
         evidence: Optional[List[dict[str, Any]]] = None,
         provenance: Optional[dict[str, Any]] = None,
+        task_id: Optional[str] = None,
     ) -> str:
         """Record a testable claim with verification status."""
         claim = Claim(
@@ -80,12 +102,43 @@ class CortexAPI:
             evidence=evidence,
             provenance=provenance,
         )
-        return self.storage.write_claim(claim)
+        persisted_id = self.storage.write_claim(claim)
 
-    def get(self, id: str, category: Optional[str] = None) -> Optional[dict[str, Any]]:
+        # Record observable claim capture event
+        self.record_event(
+            event_type="claim_recorded",
+            role="LEARNING",
+            payload={"claim_id": id, "statement": statement, "status": status},
+            task_id=task_id,
+            provenance=provenance,
+        )
+        return persisted_id
+
+    def get(
+        self,
+        id: str,
+        category: Optional[str] = None,
+        task_id: Optional[str] = None,
+        role: str = "MEMORY",
+    ) -> Optional[dict[str, Any]]:
         """Retrieve a specific knowledge record by ID."""
         item = self.storage.read_knowledge(id, category)
-        return item.to_dict() if item else None
+        if item is not None:
+            self.record_event(
+                event_type="memory_get",
+                role=role,
+                payload={"id": id, "found": True, "type": item.type},
+                task_id=task_id,
+            )
+            return item.to_dict()
+        else:
+            self.record_event(
+                event_type="memory_get",
+                role=role,
+                payload={"id": id, "found": False},
+                task_id=task_id,
+            )
+            return None
 
     def get_claim(self, id: str) -> Optional[dict[str, Any]]:
         """Retrieve a specific claim record by ID."""
@@ -97,20 +150,40 @@ class CortexAPI:
         query: str,
         category: Optional[str] = None,
         limit: int = 10,
-    ) -> List[dict[str, Any]]:
-        """Simple deterministic substring search over local knowledge files."""
+        task_id: Optional[str] = None,
+        role: str = "MEMORY",
+    ) -> dict[str, Any]:
+        """Search local knowledge files and return structured evidence (not instructions)."""
         items = self.storage.list_knowledge(category)
         query_lower = query.lower()
-        matches = []
+        matched_items: List[dict[str, Any]] = []
 
         for item in items:
             searchable_text = f"{item.id} {item.title} {item.content} {item.type}".lower()
             if query_lower in searchable_text:
-                matches.append(item.to_dict())
-                if len(matches) >= limit:
+                matched_items.append(item.to_dict())
+                if len(matched_items) >= limit:
                     break
 
-        return matches
+        result_payload = {
+            "query": query,
+            "results": matched_items,
+            "count": len(matched_items),
+        }
+
+        # Record observable memory retrieval event without hidden reasoning
+        self.record_event(
+            event_type="memory_retrieval",
+            role=role,
+            payload={
+                "query": query,
+                "result_ids": [r["id"] for r in matched_items],
+                "count": len(matched_items),
+            },
+            task_id=task_id,
+        )
+
+        return result_payload
 
     def create_role_context(
         self,
@@ -133,9 +206,16 @@ class CortexAPI:
         self,
         stable: dict[str, Any] | str,
         dynamic: dict[str, Any] | str,
+        role: Optional[str] = None,
+        task_id: Optional[str] = None,
     ) -> ContextPackage:
         """Construct a two-layer ContextPackage."""
-        return ContextPackage(stable=stable, dynamic=dynamic)
+        return ContextPackage(
+            stable=stable,
+            dynamic=dynamic,
+            role=role,
+            task_id=task_id,
+        )
 
     def serialize_role_result(
         self,
@@ -152,3 +232,43 @@ class CortexAPI:
             provenance=provenance,
         )
         return res.to_dict()
+
+    def transition_role(
+        self,
+        from_context: RoleContext,
+        to_role: str,
+        to_stable_context: dict[str, Any] | str,
+        to_tools: List[str],
+        transfer_payload: Optional[dict[str, Any]] = None,
+        task_id: Optional[str] = None,
+    ) -> RoleContext:
+        """Transition ONE Agent from one role to another with context isolation.
+        
+        Guarantees:
+        1. Private working context from `from_context` is NOT copied.
+        2. Only explicitly passed `transfer_payload` (e.g. RoleResult) enters `dynamic_context`.
+        3. Records an observable `role_transition` event.
+        """
+        active_task_id = task_id or from_context.task_id
+        new_dynamic_context = transfer_payload or {}
+
+        new_context = RoleContext(
+            role=to_role,
+            stable_context=to_stable_context,
+            dynamic_context=new_dynamic_context,
+            available_tools=to_tools,
+            task_id=active_task_id,
+        )
+
+        self.record_event(
+            event_type="role_transition",
+            role=to_role,
+            payload={
+                "from_role": from_context.role,
+                "to_role": to_role,
+                "transferred_keys": list(new_dynamic_context.keys()) if isinstance(new_dynamic_context, dict) else ["raw"],
+            },
+            task_id=active_task_id,
+        )
+
+        return new_context

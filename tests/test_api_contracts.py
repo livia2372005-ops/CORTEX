@@ -80,9 +80,9 @@ class TestCortexAPIContracts(unittest.TestCase):
             content="Use one Agent operating across distinct role modes.",
         )
 
-        matches = self.api.search("reasoning leakage")
-        self.assertEqual(len(matches), 1)
-        self.assertEqual(matches[0]["id"], "LESSON-01")
+        search_res = self.api.search("reasoning leakage")
+        self.assertEqual(len(search_res["results"]), 1)
+        self.assertEqual(search_res["results"][0]["id"], "LESSON-01")
 
         retrieved = self.api.get("DEC-02", category="decisions")
         self.assertIsNotNone(retrieved)
