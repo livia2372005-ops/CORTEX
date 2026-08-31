@@ -46,7 +46,7 @@ class Knowledge:
     type: str  # decision, constraint, failure, lesson, claim
     title: str
     content: str
-    status: str = "active"
+    status: str = "active"  # active, superseded, deprecated
     created_at: str = field(default_factory=utc_now_iso)
     provenance: Optional[dict[str, Any]] = None
     supersedes: Optional[str] = None
@@ -59,11 +59,13 @@ class Knowledge:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Knowledge:
+        content = data.get("content") or data.get("statement", "")
+        title = data.get("title") or (content[:60] if content else "")
         return cls(
             id=data["id"],
-            type=data["type"],
-            title=data.get("title", ""),
-            content=data.get("content", ""),
+            type=data.get("type", "knowledge"),
+            title=title,
+            content=content,
             status=data.get("status", "active"),
             created_at=data.get("created_at", utc_now_iso()),
             provenance=data.get("provenance"),
@@ -75,14 +77,41 @@ class Knowledge:
 
 
 @dataclass
+class Evidence:
+    """Explicit, inspectable evidence reference."""
+    id: str
+    type: str  # artifact, test, git_commit, source_document
+    path: Optional[str] = None
+    content_hash: Optional[str] = None
+    commit: Optional[str] = None
+    test_id: Optional[str] = None
+    details: Optional[dict[str, Any]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Evidence:
+        return cls(
+            id=data["id"],
+            type=data["type"],
+            path=data.get("path"),
+            content_hash=data.get("content_hash"),
+            commit=data.get("commit"),
+            test_id=data.get("test_id"),
+            details=data.get("details"),
+        )
+
+
+@dataclass
 class Claim:
     """Claim contract for tracking empirical assertions and verification state."""
     id: str
     statement: str
     type: str = "claim"
-    status: str = "unverified"  # unverified, verified, affected, rejected
+    status: str = "unverified"  # unverified, verified, affected, rejected, unprovable
     created_at: str = field(default_factory=utc_now_iso)
-    artifact: Optional[dict[str, Any]] = None  # e.g., {"path": "...", "hash": "..."}
+    artifact: Optional[dict[str, Any]] = None  # e.g., {"path": "...", "content_hash": "...", "commit": "..."}
     evidence: Optional[List[dict[str, Any]]] = None
     provenance: Optional[dict[str, Any]] = None
 

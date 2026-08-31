@@ -118,6 +118,18 @@ class CortexAPI:
             provenance=provenance,
         )
         persisted_id = self.storage.write_claim(claim)
+        try:
+            self.indexer.index_knowledge_item(Knowledge(
+                id=claim.id,
+                type="claim",
+                title=claim.statement[:60],
+                content=claim.statement,
+                status=claim.status,
+                provenance=claim.provenance,
+                evidence=claim.evidence,
+            ))
+        except Exception:
+            pass  # Indexing error must never break canonical storage write
 
         # Record observable claim capture event
         self.record_event(
@@ -159,6 +171,53 @@ class CortexAPI:
         """Retrieve a specific claim record by ID."""
         claim = self.storage.read_claim(id)
         return claim.to_dict() if claim else None
+
+    def check_claim_freshness(
+        self,
+        id: str,
+        workspace_root: Optional[str | Path] = None,
+        role: str = "REVIEW",
+        task_id: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Evaluate freshness of a claim against current codebase artifacts."""
+        claim = self.storage.read_claim(id)
+        if claim is None:
+            return None
+
+        from .freshness import evaluate_claim_freshness
+        root_dir = workspace_root or self.storage.cortex_dir.parent
+        report = evaluate_claim_freshness(claim, workspace_root=root_dir)
+
+        # Update stored claim status if changed (e.g. verified -> affected)
+        if report["status"] != claim.status:
+            claim.status = report["status"]
+            self.storage.write_claim(claim)
+            try:
+                self.indexer.index_knowledge_item(Knowledge(
+                    id=claim.id,
+                    type=claim.type,
+                    title=claim.statement[:60],
+                    content=claim.statement,
+                    status=claim.status,
+                    provenance=claim.provenance,
+                    evidence=claim.evidence,
+                ))
+            except Exception:
+                pass
+
+        # Record observable freshness check event
+        self.record_event(
+            event_type="claim_freshness_checked",
+            role=role,
+            payload={
+                "claim_id": id,
+                "fresh": report["fresh"],
+                "status": report["status"],
+                "reason": report["reason"],
+            },
+            task_id=task_id,
+        )
+        return report
 
     def search(
         self,

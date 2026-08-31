@@ -128,6 +128,20 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
             "required": ["id", "knowledge_type", "title", "content"],
         },
     },
+    {
+        "name": "cortex_check_claim_freshness",
+        "description": "Evaluate empirical claim freshness by verifying supporting artifact content hashes against current workspace files.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Claim ID to verify (e.g., 'CLAIM-001').",
+                },
+            },
+            "required": ["id"],
+        },
+    },
 ]
 
 
@@ -280,6 +294,15 @@ class CortexMCPServer:
                 affects=affects,
             )
             return {"persisted_id": persisted_id, "status": "persisted"}
+
+        elif name == "cortex_check_claim_freshness":
+            claim_id = args.get("id")
+            if not claim_id:
+                raise ValueError("Parameter 'id' is required for cortex_check_claim_freshness.")
+            report = self.api.check_claim_freshness(id=claim_id, role="REVIEW")
+            if report is None:
+                return {"found": False, "id": claim_id, "message": "Claim not found"}
+            return report
 
         else:
             raise ValueError(f"Unknown tool name: {name}")
