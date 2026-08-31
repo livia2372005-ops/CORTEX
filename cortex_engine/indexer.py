@@ -66,11 +66,10 @@ class CortexIndexer:
                 title,
                 content,
                 status,
-                related,
-                affects,
+                related_text,
+                affects_text,
                 provenance_text,
-                raw_json UNINDEXED,
-                tokenize = 'unicode61'
+                tokenize='unicode61'
             )
             """
         )
@@ -85,14 +84,14 @@ class CortexIndexer:
                 payload_text,
                 provenance_text,
                 raw_json UNINDEXED,
-                tokenize = 'unicode61'
+                tokenize='unicode61'
             )
             """
         )
         conn.commit()
 
     def index_knowledge_item(self, item: Knowledge, conn: Optional[sqlite3.Connection] = None) -> None:
-        """Index a single knowledge record into fts_knowledge."""
+        """Index a persistent knowledge item into fts_knowledge."""
         should_close = False
         if conn is None:
             conn = self._get_connection()
@@ -105,12 +104,11 @@ class CortexIndexer:
         related_text = " ".join(item.related) if item.related else ""
         affects_text = " ".join(item.affects) if item.affects else ""
         prov_text = json.dumps(item.provenance, ensure_ascii=False) if item.provenance else ""
-        raw_json = json.dumps(item.to_dict(), ensure_ascii=False)
 
         cursor.execute(
             """
-            INSERT INTO fts_knowledge (id, type, title, content, status, related, affects, provenance_text, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO fts_knowledge (id, type, title, content, status, related_text, affects_text, provenance_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 item.id,
@@ -121,7 +119,6 @@ class CortexIndexer:
                 related_text,
                 affects_text,
                 prov_text,
-                raw_json,
             ),
         )
         conn.commit()
@@ -179,12 +176,11 @@ class CortexIndexer:
         cursor = conn.cursor()
 
         try:
+            cat_normalized = category.lower().rstrip("s") if category else ""
             if category:
-                # Map potential singular to plural or normalized category
-                cat_normalized = category.lower().rstrip("s")
                 cursor.execute(
                     """
-                    SELECT id, raw_json, rank FROM fts_knowledge
+                    SELECT id, rank FROM fts_knowledge
                     WHERE fts_knowledge MATCH ? AND type LIKE ?
                     ORDER BY rank ASC, id ASC
                     LIMIT ?
@@ -194,7 +190,7 @@ class CortexIndexer:
             else:
                 cursor.execute(
                     """
-                    SELECT id, raw_json, rank FROM fts_knowledge
+                    SELECT id, rank FROM fts_knowledge
                     WHERE fts_knowledge MATCH ?
                     ORDER BY rank ASC, id ASC
                     LIMIT ?
@@ -203,6 +199,7 @@ class CortexIndexer:
                 )
 
             rows = cursor.fetchall()
+
             results: List[Dict[str, Any]] = []
             for row in rows:
                 item_id = row["id"]
@@ -212,11 +209,6 @@ class CortexIndexer:
                     if canonical_item is not None:
                         results.append(canonical_item.to_dict())
                         continue
-                # Fallback to index snapshot if storage is not attached
-                try:
-                    results.append(json.loads(row["raw_json"]))
-                except Exception:
-                    continue
             return results
         except sqlite3.OperationalError:
             return []
