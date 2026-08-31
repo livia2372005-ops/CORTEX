@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, List, Optional
 
+from .indexer import CortexIndexer
 from .models import (
     Claim,
     ContextPackage,
@@ -18,10 +19,15 @@ from .storage import CortexStorage
 
 
 class CortexAPI:
-    """Standard callable API for CORTEX tools."""
+    """Standard callable API for CORTEX tools with SQLite FTS5 acceleration."""
 
-    def __init__(self, storage: Optional[CortexStorage] = None):
+    def __init__(
+        self,
+        storage: Optional[CortexStorage] = None,
+        indexer: Optional[CortexIndexer] = None,
+    ):
         self.storage = storage or CortexStorage()
+        self.indexer = indexer or CortexIndexer(storage=self.storage)
 
     def record_event(
         self,
@@ -32,7 +38,7 @@ class CortexAPI:
         task_id: Optional[str] = None,
         provenance: Optional[dict[str, Any]] = None,
     ) -> str:
-        """Record an observable event in append-only log."""
+        """Record an observable event in append-only log and derived index."""
         event_id = id or f"evt-{uuid.uuid4().hex[:8]}"
         event = Event(
             id=event_id,
@@ -42,7 +48,12 @@ class CortexAPI:
             task_id=task_id,
             provenance=provenance,
         )
-        return self.storage.record_event(event)
+        persisted_id = self.storage.record_event(event)
+        try:
+            self.indexer.index_event(event)
+        except Exception:
+            pass  # Indexing error must never break canonical storage write
+        return persisted_id
 
     def record_knowledge(
         self,
@@ -58,7 +69,7 @@ class CortexAPI:
         evidence: Optional[List[dict[str, Any]]] = None,
         task_id: Optional[str] = None,
     ) -> str:
-        """Record a persistent knowledge item (decision, constraint, failure, lesson)."""
+        """Record a persistent knowledge item in canonical files and derived index."""
         item = Knowledge(
             id=id,
             type=knowledge_type,
@@ -72,6 +83,10 @@ class CortexAPI:
             evidence=evidence,
         )
         persisted_id = self.storage.write_knowledge(item)
+        try:
+            self.indexer.index_knowledge_item(item)
+        except Exception:
+            pass  # Indexing error must never break canonical write
 
         # Record observable knowledge capture event
         self.record_event(
@@ -153,17 +168,19 @@ class CortexAPI:
         task_id: Optional[str] = None,
         role: str = "MEMORY",
     ) -> dict[str, Any]:
-        """Search local knowledge files and return structured evidence (not instructions)."""
-        items = self.storage.list_knowledge(category)
-        query_lower = query.lower()
-        matched_items: List[dict[str, Any]] = []
+        """Search knowledge using fast SQLite FTS5 with fallback to canonical storage scan."""
+        matched_items = self.indexer.search_knowledge(query, category=category, limit=limit)
 
-        for item in items:
-            searchable_text = f"{item.id} {item.title} {item.content} {item.type}".lower()
-            if query_lower in searchable_text:
-                matched_items.append(item.to_dict())
-                if len(matched_items) >= limit:
-                    break
+        # Fallback to filesystem scan if FTS index was not yet populated / query empty
+        if not matched_items and not self.indexer.db_path.exists():
+            items = self.storage.list_knowledge(category)
+            query_lower = query.lower()
+            for item in items:
+                searchable_text = f"{item.id} {item.title} {item.content} {item.type}".lower()
+                if query_lower in searchable_text:
+                    matched_items.append(item.to_dict())
+                    if len(matched_items) >= limit:
+                        break
 
         result_payload = {
             "query": query,
@@ -171,7 +188,7 @@ class CortexAPI:
             "count": len(matched_items),
         }
 
-        # Record observable memory retrieval event without hidden reasoning
+        # Record observable memory retrieval event
         self.record_event(
             event_type="memory_retrieval",
             role=role,
@@ -184,6 +201,25 @@ class CortexAPI:
         )
 
         return result_payload
+
+    def search_events(
+        self,
+        query: str,
+        event_type: Optional[str] = None,
+        limit: int = 10,
+    ) -> List[dict[str, Any]]:
+        """Search indexed events via SQLite FTS5."""
+        return self.indexer.search_events(query, event_type=event_type, limit=limit)
+
+    def rebuild_indexes(self) -> dict[str, int]:
+        """Rebuild entire derived index from canonical filesystem storage."""
+        stats = self.indexer.rebuild_from_canonical(self.storage)
+        self.record_event(
+            event_type="index_rebuilt",
+            role="APP",
+            payload=stats,
+        )
+        return stats
 
     def create_role_context(
         self,
@@ -242,13 +278,7 @@ class CortexAPI:
         transfer_payload: Optional[dict[str, Any]] = None,
         task_id: Optional[str] = None,
     ) -> RoleContext:
-        """Transition ONE Agent from one role to another with context isolation.
-        
-        Guarantees:
-        1. Private working context from `from_context` is NOT copied.
-        2. Only explicitly passed `transfer_payload` (e.g. RoleResult) enters `dynamic_context`.
-        3. Records an observable `role_transition` event.
-        """
+        """Transition ONE Agent from one role to another with context isolation."""
         active_task_id = task_id or from_context.task_id
         new_dynamic_context = transfer_payload or {}
 
