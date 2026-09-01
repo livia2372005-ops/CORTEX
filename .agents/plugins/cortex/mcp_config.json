@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "cortex-mcp": {
+      "command": "python",
+      "args": ["-m", "cortex_engine.mcp_server"],
+      "description": "Local CORTEX MCP server providing structured memory and context compilation."
+    }
+  }
+}
