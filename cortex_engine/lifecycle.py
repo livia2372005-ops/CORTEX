@@ -83,7 +83,7 @@ class MemoryLifecycleManager:
             ):
                 summary = payload.get("summary") or payload.get("decision") or payload.get("title") or "Architectural decision recorded"
                 details = payload.get("rationale") or payload.get("content") or str(payload)
-                cand_id = f"cand-dec-{evt.id[:8]}"
+                cand_id = f"cand-dec-{evt.id}"
                 if cand_id not in seen_cand_keys:
                     seen_cand_keys.add(cand_id)
                     candidates.append(
@@ -108,7 +108,7 @@ class MemoryLifecycleManager:
             ):
                 summary = payload.get("summary") or payload.get("constraint") or payload.get("rule") or "Project constraint detected"
                 details = payload.get("rationale") or payload.get("content") or str(payload)
-                cand_id = f"cand-con-{evt.id[:8]}"
+                cand_id = f"cand-con-{evt.id}"
                 if cand_id not in seen_cand_keys:
                     seen_cand_keys.add(cand_id)
                     candidates.append(
@@ -128,7 +128,7 @@ class MemoryLifecycleManager:
             elif evt_type in ("incident_postmortem", "lesson_learned", "root_cause_analysis"):
                 summary = payload.get("summary") or payload.get("lesson") or "Incident lesson identified"
                 details = payload.get("root_cause") or payload.get("content") or str(payload)
-                cand_id = f"cand-les-{evt.id[:8]}"
+                cand_id = f"cand-les-{evt.id}"
                 if cand_id not in seen_cand_keys:
                     seen_cand_keys.add(cand_id)
                     candidates.append(
@@ -218,6 +218,11 @@ class MemoryLifecycleManager:
             "lesson": "LES",
             "claim": "CLM",
         }
+        # Idempotency check: if candidate was already promoted, return existing record
+        for item in self.storage.list_knowledge(category=candidate.candidate_type):
+            if item.provenance and item.provenance.get("promoted_from_candidate") == candidate.id:
+                return item
+
         prefix = type_prefix_map.get(candidate.candidate_type, "KNW")
         if not knowledge_id:
             existing = self.storage.list_knowledge(category=candidate.candidate_type)
@@ -305,6 +310,11 @@ class MemoryLifecycleManager:
             "lesson": "LES",
             "claim": "CLM",
         }
+        # Idempotency check: if exact same events and title were already promoted
+        for item in self.storage.list_knowledge(category=knowledge_type):
+            if item.derived_from == list(event_ids) and item.title == title:
+                return item
+
         prefix = type_prefix_map.get(knowledge_type, "KNW")
         if not knowledge_id:
             existing = self.storage.list_knowledge(category=knowledge_type)
