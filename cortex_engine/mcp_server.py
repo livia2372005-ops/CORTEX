@@ -142,6 +142,35 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
             "required": ["id"],
         },
     },
+    {
+        "name": "cortex_compile_context",
+        "description": "Compile selected CORTEX memory IDs into a structured, bounded context for the active engineering task.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "Active task description.",
+                },
+                "memory_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Explicit list of knowledge/claim IDs chosen by the Agent (e.g., ['CON-001', 'DEC-007']).",
+                },
+                "budget_tokens": {
+                    "type": "integer",
+                    "description": "Optional token budget for injected memory (default: 500).",
+                    "default": 500,
+                },
+                "role": {
+                    "type": "string",
+                    "description": "Active role mode (default: 'APP').",
+                    "default": "APP",
+                },
+            },
+            "required": ["task", "memory_ids"],
+        },
+    },
 ]
 
 
@@ -303,6 +332,15 @@ class CortexMCPServer:
             if report is None:
                 return {"found": False, "id": claim_id, "message": "Claim not found"}
             return report
+
+        elif name == "cortex_compile_context":
+            task = args.get("task")
+            memory_ids = args.get("memory_ids")
+            if not task or memory_ids is None:
+                raise ValueError("Parameters 'task' and 'memory_ids' are required for cortex_compile_context.")
+            budget = int(args.get("budget_tokens", 500))
+            role = args.get("role", "APP")
+            return self.api.compile_context(task=task, memory_ids=memory_ids, budget_tokens=budget, role=role)
 
         else:
             raise ValueError(f"Unknown tool name: {name}")

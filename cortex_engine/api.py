@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, List, Optional
 
+from .compiler import CompiledContext, ContextCompiler
 from .indexer import CortexIndexer
 from .models import (
     Claim,
@@ -25,9 +26,11 @@ class CortexAPI:
         self,
         storage: Optional[CortexStorage] = None,
         indexer: Optional[CortexIndexer] = None,
+        compiler: Optional[ContextCompiler] = None,
     ):
         self.storage = storage or CortexStorage()
         self.indexer = indexer or CortexIndexer(storage=self.storage)
+        self.compiler = compiler or ContextCompiler(storage=self.storage)
 
     def record_event(
         self,
@@ -260,6 +263,61 @@ class CortexAPI:
         )
 
         return result_payload
+
+    def compile_context(
+        self,
+        task: str,
+        memory_ids: List[str],
+        budget_tokens: int = 500,
+        role: str = "APP",
+        task_id: Optional[str] = None,
+        layout: str = "layout_4",
+    ) -> Dict[str, Any]:
+        """Compile selected memory records into a structured, bounded context for the Agent."""
+        compiled = self.compiler.compile(
+            task=task,
+            memory_ids=memory_ids,
+            budget_tokens=budget_tokens,
+            role=role,
+            task_id=task_id,
+            layout=layout,
+        )
+
+        # Record observable context compilation event
+        self.record_event(
+            event_type="context_compiled",
+            role=role,
+            payload={
+                "task": task[:60],
+                "selected_ids": memory_ids,
+                "included_ids": compiled.included_ids,
+                "dropped_ids": compiled.dropped_ids_budget,
+                "memory_tokens": compiled.memory_tokens_estimate,
+                "total_tokens": compiled.total_tokens_estimate,
+            },
+            task_id=task_id,
+        )
+        return compiled.to_dict()
+
+    def retrieve_context(
+        self,
+        query: str,
+        budget_tokens: int = 500,
+        role: str = "APP",
+        task_id: Optional[str] = None,
+        layout: str = "layout_4",
+    ) -> Dict[str, Any]:
+        """Convenience API: Search candidates, select top matching IDs, and compile context."""
+        search_res = self.search(query=query, limit=10, role="MEMORY", task_id=task_id)
+        candidate_ids = [r["id"] for r in search_res["results"]]
+        return self.compile_context(
+            task=query,
+            memory_ids=candidate_ids,
+            budget_tokens=budget_tokens,
+            role=role,
+            task_id=task_id,
+            layout=layout,
+        )
 
     def search_events(
         self,
