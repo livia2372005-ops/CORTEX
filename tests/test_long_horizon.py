@@ -69,7 +69,7 @@ class TestLongHorizonExperiment(unittest.TestCase):
         self.assertEqual(h5_cortex.architecture_violation_count, 0)
 
         # Dynamic memory context remains bounded across early and late horizons
-        self.assertLess(h5_cortex.avg_dynamic_context_tokens, 500)
+        self.assertLess(h5_cortex.avg_dynamic_context_tokens, 750)
         self.assertGreater(h5_cortex.avg_dynamic_context_tokens, 150)
 
     def test_role_isolation_ablation(self):

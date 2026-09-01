@@ -1,4 +1,4 @@
-"""CORTEX Phase 14 Hybrid Retrieval Router."""
+"""CORTEX Phase 15 Hybrid Retrieval Router & Production Integration."""
 
 from __future__ import annotations
 
@@ -10,16 +10,17 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .api import CortexAPI
 from .indexer import CortexIndexer
 from .models import Knowledge
 from .retrieval_benchmark import (
     LEXICAL_SYNONYMS,
-    BenchmarkQuery,
     SemanticVectorIndex,
-    build_benchmark_dataset,
 )
 from .storage import CortexStorage
+
+VECTORIZER_VERSION: str = "tfidf_ngram_v1"
+VECTOR_DIMENSION: int = 384
+INDEX_SCHEMA_VERSION: str = "1.0.0"
 
 
 class RouterPolicy(str, Enum):
@@ -27,6 +28,29 @@ class RouterPolicy(str, Enum):
     POLICY_B_ZERO_FALLBACK = "policy_b_zero_fallback"
     POLICY_C_WEAK_CONFIDENCE_FALLBACK = "policy_c_weak_confidence_fallback"
     POLICY_D_HYBRID_EXPAND_FALLBACK = "policy_d_hybrid_expand_fallback"
+    # Shorthand aliases
+    FTS = "fts"
+    HYBRID = "hybrid"
+    SEMANTIC = "semantic"
+
+
+def parse_policy(policy_input: Any) -> RouterPolicy:
+    """Parse string or enum into standardized RouterPolicy."""
+    if isinstance(policy_input, RouterPolicy):
+        return policy_input
+    if isinstance(policy_input, str):
+        p_lower = policy_input.lower().strip()
+        if p_lower in ("fts", "policy_a_fts_only", "fts_only"):
+            return RouterPolicy.POLICY_A_FTS_ONLY
+        if p_lower in ("policy_b_zero_fallback", "zero_fallback"):
+            return RouterPolicy.POLICY_B_ZERO_FALLBACK
+        if p_lower in ("policy_c_weak_confidence_fallback", "weak_fallback"):
+            return RouterPolicy.POLICY_C_WEAK_CONFIDENCE_FALLBACK
+        if p_lower in ("hybrid", "policy_d_hybrid_expand_fallback", "default", ""):
+            return RouterPolicy.POLICY_D_HYBRID_EXPAND_FALLBACK
+        if p_lower in ("semantic", "embeddings"):
+            return RouterPolicy.SEMANTIC
+    return RouterPolicy.POLICY_D_HYBRID_EXPAND_FALLBACK
 
 
 @dataclass
@@ -39,6 +63,8 @@ class RoutedSearchResult:
     supersedes: Optional[str] = None
     retrieval_source: Any = field(default_factory=list)  # str or List[str]
     provenance: Optional[Dict[str, Any]] = None
+    evidence: Optional[Dict[str, Any]] = None
+    scores: Dict[str, Any] = field(default_factory=dict)
     backend_metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -89,17 +115,23 @@ class HybridRetrievalRouter:
 
         return merged_results[:limit]
 
-    def _execute_semantic(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Execute local dense n-gram embedding search."""
-        return self.vector_index.search(query=query, limit=limit)
+    def _execute_semantic(self, query: str, limit: int = 10) -> Tuple[List[Dict[str, Any]], str]:
+        """Execute local dense n-gram embedding search with graceful degradation."""
+        if not self.vector_index.db_path.exists():
+            return [], "SEMANTIC_UNAVAILABLE"
+        try:
+            results = self.vector_index.search(query=query, limit=limit)
+            return results, "SUCCESS"
+        except Exception:
+            return [], "SEMANTIC_FAILED"
 
     def assess_lexical_confidence(self, query: str, fts_results: List[Dict[str, Any]]) -> str:
         """Deterministically assess whether lexical search results are strong or weak.
         
         Criteria for WEAK:
-        1. 0 results returned.
-        2. Fewer than 2 results for multi-word queries.
-        3. Query terms do not match titles or content of top result (low term overlap).
+        1. 0 results returned -> WEAK_EMPTY
+        2. Multi-word query with zero lexical overlap with top result -> WEAK_LOW_OVERLAP
+        3. Single result on long query with sparse overlap -> WEAK_SPARSE
         """
         if not fts_results:
             return "WEAK_EMPTY"
@@ -110,7 +142,6 @@ class HybridRetrievalRouter:
         top_words = set(re.findall(r"\b\w+\b", top_text))
 
         overlap = q_words.intersection(top_words)
-        # If multi-word query has very low lexical overlap with top candidate
         if len(q_words) >= 3 and len(overlap) < 1:
             return "WEAK_LOW_OVERLAP"
 
@@ -127,7 +158,7 @@ class HybridRetrievalRouter:
         fallback_source: str,
         limit: int = 10,
     ) -> List[RoutedSearchResult]:
-        """Merge primary and fallback candidate records, deduplicating IDs while preserving dual provenance."""
+        """Merge primary and fallback candidate records, deduplicating IDs while preserving dual provenance and distinct scores."""
         records_by_id: Dict[str, RoutedSearchResult] = {}
 
         # 1. Ingest primary results
@@ -142,6 +173,8 @@ class HybridRetrievalRouter:
                 supersedes=r.get("supersedes"),
                 retrieval_source=[primary_source],
                 provenance=r.get("provenance"),
+                evidence=r.get("evidence"),
+                scores={f"{primary_source}_rank": idx + 1},
                 backend_metadata={primary_source: {"rank": idx + 1}},
             )
 
@@ -149,15 +182,20 @@ class HybridRetrievalRouter:
         for idx, r in enumerate(fallback_results):
             r_id = r["id"]
             if r_id in records_by_id:
-                # Merge provenance
                 existing = records_by_id[r_id]
                 if fallback_source not in existing.retrieval_source:
                     existing.retrieval_source.append(fallback_source)
+                if r.get("similarity_score") is not None:
+                    existing.scores[f"{fallback_source}_score"] = r.get("similarity_score")
                 existing.backend_metadata[fallback_source] = {
                     "rank": idx + 1,
                     "similarity_score": r.get("similarity_score"),
                 }
             else:
+                scores_dict: Dict[str, Any] = {f"{fallback_source}_rank": idx + 1}
+                if r.get("similarity_score") is not None:
+                    scores_dict[f"{fallback_source}_score"] = r.get("similarity_score")
+
                 records_by_id[r_id] = RoutedSearchResult(
                     id=r_id,
                     type=r.get("type", "knowledge"),
@@ -167,6 +205,8 @@ class HybridRetrievalRouter:
                     supersedes=r.get("supersedes"),
                     retrieval_source=[fallback_source],
                     provenance=r.get("provenance"),
+                    evidence=r.get("evidence"),
+                    scores=scores_dict,
                     backend_metadata={
                         fallback_source: {
                             "rank": idx + 1,
@@ -176,7 +216,6 @@ class HybridRetrievalRouter:
                 )
 
         merged_list = list(records_by_id.values())[:limit]
-        # Normalize single retrieval sources to string for clean serialization if desired
         for item in merged_list:
             if isinstance(item.retrieval_source, list) and len(item.retrieval_source) == 1:
                 item.retrieval_source = item.retrieval_source[0]
@@ -186,15 +225,17 @@ class HybridRetrievalRouter:
     def search(
         self,
         query: str,
-        policy: RouterPolicy = RouterPolicy.POLICY_D_HYBRID_EXPAND_FALLBACK,
+        policy: RouterPolicy | str = RouterPolicy.POLICY_D_HYBRID_EXPAND_FALLBACK,
         limit: int = 10,
     ) -> Dict[str, Any]:
         """Execute hybrid routed retrieval under the specified routing policy."""
         t0 = time.perf_counter()
+        active_policy = parse_policy(policy)
         triggered_backends: List[str] = []
         routing_decision: str = "DIRECT"
+        status_code: str = "SUCCESS"
 
-        if policy == RouterPolicy.POLICY_A_FTS_ONLY:
+        if active_policy in (RouterPolicy.POLICY_A_FTS_ONLY, RouterPolicy.FTS):
             triggered_backends.append("fts")
             raw_fts = self._execute_fts(query, limit=limit)
             final_results = [
@@ -207,18 +248,22 @@ class HybridRetrievalRouter:
                     supersedes=r.get("supersedes"),
                     retrieval_source="fts",
                     provenance=r.get("provenance"),
+                    evidence=r.get("evidence"),
+                    scores={"fts_rank": idx + 1},
                     backend_metadata={"fts": {"rank": idx + 1}},
                 )
                 for idx, r in enumerate(raw_fts)
             ]
 
-        elif policy == RouterPolicy.POLICY_B_ZERO_FALLBACK:
+        elif active_policy == RouterPolicy.POLICY_B_ZERO_FALLBACK:
             triggered_backends.append("fts")
             raw_fts = self._execute_fts(query, limit=limit)
             if len(raw_fts) == 0:
                 routing_decision = "FALLBACK_ON_ZERO"
                 triggered_backends.append("semantic")
-                raw_semantic = self._execute_semantic(query, limit=limit)
+                raw_semantic, sem_status = self._execute_semantic(query, limit=limit)
+                if sem_status != "SUCCESS":
+                    status_code = sem_status
                 final_results = [
                     RoutedSearchResult(
                         id=r["id"],
@@ -229,6 +274,8 @@ class HybridRetrievalRouter:
                         supersedes=r.get("supersedes"),
                         retrieval_source="semantic",
                         provenance=r.get("provenance"),
+                        evidence=r.get("evidence"),
+                        scores={"semantic_score": r.get("similarity_score"), "semantic_rank": idx + 1},
                         backend_metadata={"semantic": {"rank": idx + 1, "similarity_score": r.get("similarity_score")}},
                     )
                     for idx, r in enumerate(raw_semantic)
@@ -244,12 +291,14 @@ class HybridRetrievalRouter:
                         supersedes=r.get("supersedes"),
                         retrieval_source="fts",
                         provenance=r.get("provenance"),
+                        evidence=r.get("evidence"),
+                        scores={"fts_rank": idx + 1},
                         backend_metadata={"fts": {"rank": idx + 1}},
                     )
                     for idx, r in enumerate(raw_fts)
                 ]
 
-        elif policy == RouterPolicy.POLICY_C_WEAK_CONFIDENCE_FALLBACK:
+        elif active_policy == RouterPolicy.POLICY_C_WEAK_CONFIDENCE_FALLBACK:
             triggered_backends.append("fts")
             raw_fts = self._execute_fts(query, limit=limit)
             confidence = self.assess_lexical_confidence(query, raw_fts)
@@ -257,7 +306,9 @@ class HybridRetrievalRouter:
             if confidence != "STRONG":
                 routing_decision = f"FALLBACK_ON_{confidence}"
                 triggered_backends.append("semantic")
-                raw_semantic = self._execute_semantic(query, limit=limit)
+                raw_semantic, sem_status = self._execute_semantic(query, limit=limit)
+                if sem_status != "SUCCESS":
+                    status_code = sem_status
                 final_results = self.merge_candidates(
                     primary_results=raw_fts,
                     fallback_results=raw_semantic,
@@ -276,12 +327,14 @@ class HybridRetrievalRouter:
                         supersedes=r.get("supersedes"),
                         retrieval_source="fts",
                         provenance=r.get("provenance"),
+                        evidence=r.get("evidence"),
+                        scores={"fts_rank": idx + 1},
                         backend_metadata={"fts": {"rank": idx + 1}},
                     )
                     for idx, r in enumerate(raw_fts)
                 ]
 
-        elif policy == RouterPolicy.POLICY_D_HYBRID_EXPAND_FALLBACK:
+        elif active_policy in (RouterPolicy.POLICY_D_HYBRID_EXPAND_FALLBACK, RouterPolicy.HYBRID):
             triggered_backends.append("lexical_expansion")
             raw_lex = self._execute_lexical_expansion(query, limit=limit)
             confidence = self.assess_lexical_confidence(query, raw_lex)
@@ -289,7 +342,9 @@ class HybridRetrievalRouter:
             if confidence != "STRONG":
                 routing_decision = f"FALLBACK_ON_{confidence}"
                 triggered_backends.append("semantic")
-                raw_semantic = self._execute_semantic(query, limit=limit)
+                raw_semantic, sem_status = self._execute_semantic(query, limit=limit)
+                if sem_status != "SUCCESS":
+                    status_code = sem_status
                 final_results = self.merge_candidates(
                     primary_results=raw_lex,
                     fallback_results=raw_semantic,
@@ -308,21 +363,58 @@ class HybridRetrievalRouter:
                         supersedes=r.get("supersedes"),
                         retrieval_source="lexical_expansion",
                         provenance=r.get("provenance"),
+                        evidence=r.get("evidence"),
+                        scores={"lexical_rank": idx + 1},
                         backend_metadata={"lexical_expansion": {"rank": idx + 1}},
                     )
                     for idx, r in enumerate(raw_lex)
                 ]
+
+        elif active_policy == RouterPolicy.SEMANTIC:
+            triggered_backends.append("semantic")
+            raw_semantic, sem_status = self._execute_semantic(query, limit=limit)
+            if sem_status != "SUCCESS":
+                status_code = sem_status
+            final_results = [
+                RoutedSearchResult(
+                    id=r["id"],
+                    type=r.get("type", "knowledge"),
+                    title=r.get("title", ""),
+                    content=r.get("content", ""),
+                    status=r.get("status"),
+                    supersedes=r.get("supersedes"),
+                    retrieval_source="semantic",
+                    provenance=r.get("provenance"),
+                    evidence=r.get("evidence"),
+                    scores={"semantic_score": r.get("similarity_score"), "semantic_rank": idx + 1},
+                    backend_metadata={"semantic": {"rank": idx + 1, "similarity_score": r.get("similarity_score")}},
+                )
+                for idx, r in enumerate(raw_semantic)
+            ]
         else:
-            raise ValueError(f"Unknown router policy: {policy}")
+            raise ValueError(f"Unknown router policy: {active_policy}")
+
+        if not final_results and status_code == "SUCCESS":
+            status_code = "NO_RESULTS"
 
         latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
 
         return {
             "query": query,
-            "policy": policy.value,
+            "policy": active_policy.value,
             "routing_decision": routing_decision,
             "triggered_backends": triggered_backends,
             "latency_ms": latency_ms,
             "count": len(final_results),
+            "status": status_code,
+            "routing_trace": {
+                "policy": active_policy.value,
+                "primary_backend": triggered_backends[0] if triggered_backends else None,
+                "fallback_triggered": len(triggered_backends) > 1,
+                "secondary_backend": triggered_backends[1] if len(triggered_backends) > 1 else None,
+                "routing_decision": routing_decision,
+                "status": status_code,
+                "latency_ms": latency_ms,
+            },
             "results": [r.to_dict() for r in final_results],
         }

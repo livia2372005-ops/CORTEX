@@ -275,12 +275,12 @@ class BenchmarkRunner:
             prompt_lower = task.prompt.lower()
             if "fee" in prompt_lower:
                 query = "payment fee logic"
+            elif "redis" in prompt_lower:
+                query = "Redis session"
             elif "persistence" in prompt_lower or "transaction" in prompt_lower:
                 query = "payment storage"
             elif "caching" in prompt_lower or "cache" in prompt_lower:
                 query = "cache"
-            elif "redis" in prompt_lower:
-                query = "Redis session"
             elif "notification" in prompt_lower or "event" in prompt_lower or "webhook" in prompt_lower:
                 query = "notification"
             elif "repository" in prompt_lower:

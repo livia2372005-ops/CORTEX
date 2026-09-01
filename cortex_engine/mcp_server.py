@@ -31,6 +31,11 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
                     "description": "Maximum number of evidence records to return (default: 10).",
                     "default": 10,
                 },
+                "policy": {
+                    "type": "string",
+                    "description": "Retrieval routing policy: 'hybrid' (default), 'fts', 'semantic'.",
+                    "default": "hybrid",
+                },
             },
             "required": ["query"],
         },
@@ -272,7 +277,8 @@ class CortexMCPServer:
                 raise ValueError("Parameter 'query' is required for cortex_search.")
             category = args.get("category")
             limit = int(args.get("limit", 10))
-            return self.api.search(query=query, category=category, limit=limit, role="MEMORY")
+            policy = args.get("policy", "hybrid")
+            return self.api.search(query=query, category=category, limit=limit, role="MEMORY", policy=policy)
 
         elif name == "cortex_get":
             item_id = args.get("id")

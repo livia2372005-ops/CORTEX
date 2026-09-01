@@ -77,6 +77,9 @@ class CortexCLI:
         mcp_file = self.workspace_root / ".agents" / "plugins" / "cortex" / "mcp_config.json"
         mcp_configured = plugin_file.exists() and mcp_file.exists()
 
+        vdb_path = self.cortex_dir / "indexes" / "vector.db"
+        vector_status = "HEALTHY" if vdb_path.exists() and vdb_path.stat().st_size > 0 else "MISSING"
+
         status_data = {
             "version": __version__,
             "schema_version": __schema_version__,
@@ -85,6 +88,9 @@ class CortexCLI:
             "record_counts": knowledge_counts,
             "total_records": sum(knowledge_counts.values()),
             "index_status": index_status,
+            "vector_index_status": vector_status,
+            "retrieval_policy": "hybrid",
+            "vectorizer_version": "tfidf_ngram_v1",
             "last_event_timestamp": last_event_time,
             "antigravity_plugin_configured": mcp_configured,
         }
@@ -126,7 +132,14 @@ class CortexCLI:
         else:
             checks.append({"name": "Derived Index", "status": "WARN", "detail": "SQLite index missing (run cortex reindex)"})
 
-        # 5. Antigravity Plugin Structure
+        # 5. Derived Vector Index
+        vdb_path = self.cortex_dir / "indexes" / "vector.db"
+        if vdb_path.exists() and vdb_path.stat().st_size > 0:
+            checks.append({"name": "Derived Vector Index", "status": "PASS", "detail": "Semantic vector index ready (tfidf_ngram_v1)"})
+        else:
+            checks.append({"name": "Derived Vector Index", "status": "WARN", "detail": "Semantic vector index missing (run cortex reindex)"})
+
+        # 6. Antigravity Plugin Structure
         plugin_root = self.workspace_root / ".agents" / "plugins" / "cortex"
         manifest = plugin_root / "plugin.json"
         mcp_cfg = plugin_root / "mcp_config.json"
@@ -147,6 +160,7 @@ class CortexCLI:
         return {
             "overall": overall_status,
             "cortex_version": __version__,
+            "retrieval_policy": "hybrid",
             "workspace": str(self.workspace_root),
             "checks": checks,
         }
@@ -158,81 +172,112 @@ class CortexCLI:
 
         # 2. Setup Antigravity plugin directories
         plugin_dir = self.workspace_root / ".agents" / "plugins" / "cortex"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
         (plugin_dir / "rules").mkdir(parents=True, exist_ok=True)
-        (plugin_dir / "skills" / "cortex-memory").mkdir(parents=True, exist_ok=True)
-        (plugin_dir / "skills" / "cortex-review").mkdir(parents=True, exist_ok=True)
-        (plugin_dir / "skills" / "cortex-learning").mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "skills").mkdir(parents=True, exist_ok=True)
 
-        manifest_path = plugin_dir / "plugin.json"
-        if not manifest_path.exists() or force:
-            manifest_path.write_text(
-                json.dumps(
-                    {
-                        "name": "cortex",
-                        "version": __version__,
-                        "schema_version": __schema_version__,
-                        "description": "Persistent project memory and evidence retrieval for coding Agents.",
-                        "author": "CORTEX Core Team",
-                        "components": {
-                            "rules": ["rules/cortex-awareness.md"],
-                            "skills": ["skills/cortex-memory", "skills/cortex-review", "skills/cortex-learning"],
-                            "mcp_config": "mcp_config.json",
-                            "hooks": "hooks.json",
-                        },
-                    },
-                    indent=2,
-                ) + "\n",
-                encoding="utf-8",
-            )
+        # 3. Create plugin manifest if missing
+        manifest_file = plugin_dir / "plugin.json"
+        if not manifest_file.exists() or force:
+            manifest_data = {
+                "name": "cortex",
+                "version": __version__,
+                "schema_version": __schema_version__,
+                "description": "Persistent project memory and evidence retrieval for coding Agents.",
+                "rules": ["rules/cortex-awareness.md"],
+                "skills": [
+                    "skills/cortex-memory",
+                    "skills/cortex-review",
+                    "skills/cortex-learning",
+                ],
+                "components": {
+                    "rules": ["rules/cortex-awareness.md"],
+                    "skills": ["skills/cortex-memory", "skills/cortex-review", "skills/cortex-learning"],
+                    "mcp_config": "mcp_config.json",
+                    "hooks": "hooks.json",
+                },
+                "mcp": "mcp_config.json",
+                "hooks": "hooks.json",
+            }
+            manifest_file.write_text(json.dumps(manifest_data, indent=2), encoding="utf-8")
 
-        mcp_path = plugin_dir / "mcp_config.json"
-        if not mcp_path.exists() or force:
-            mcp_path.write_text(
-                json.dumps(
-                    {
-                        "mcpServers": {
-                            "cortex-mcp": {
-                                "command": "python",
-                                "args": ["-m", "cortex_engine.mcp_server"],
-                                "description": "Local CORTEX MCP server providing structured memory and context compilation.",
-                            }
-                        }
-                    },
-                    indent=2,
-                ) + "\n",
-                encoding="utf-8",
-            )
+        # 4. Create mcp_config.json if missing
+        mcp_file = plugin_dir / "mcp_config.json"
+        if not mcp_file.exists() or force:
+            mcp_data = {
+                "mcpServers": {
+                    "cortex-mcp": {
+                        "command": "python",
+                        "args": ["-m", "cortex_engine.mcp_server"],
+                        "env": {},
+                    }
+                }
+            }
+            mcp_file.write_text(json.dumps(mcp_data, indent=2), encoding="utf-8")
 
-        hooks_path = plugin_dir / "hooks.json"
-        if not hooks_path.exists() or force:
-            hooks_path.write_text(json.dumps({"hooks": []}, indent=2) + "\n", encoding="utf-8")
+        # 5. Create hooks.json if missing
+        hooks_file = plugin_dir / "hooks.json"
+        if not hooks_file.exists() or force:
+            hooks_data = {
+                "version": "1.0.0",
+                "hooks": {
+                    "on_session_start": {
+                        "description": "Verify CORTEX index readiness upon workspace session start",
+                        "action": "cortex doctor",
+                    }
+                },
+            }
+            hooks_file.write_text(json.dumps(hooks_data, indent=2), encoding="utf-8")
 
-        rule_path = plugin_dir / "rules" / "cortex-awareness.md"
-        if not rule_path.exists() or force:
-            rule_path.write_text(
-                "---\ndescription: Awareness rule for CORTEX memory and evidence tooling in the workspace\ntrigger: always_on\n---\n\n"
-                "# CORTEX Awareness\n\n"
-                "CORTEX is active in this workspace to provide persistent project memory, event tracking, and evidence retrieval.\n\n"
-                "- **Agent Responsibility**: You (the Agent) remain fully responsible for reasoning, interpretation, planning, decisions, coding, and final judgment. CORTEX is your tool and evidence substrate, not an autonomous decision authority.\n"
-                "- **Roles & Capabilities**: When helpful, you may transition roles (`APP`, `MEMORY`, `REVIEW`, `LEARNING`) using CORTEX skills and tools to query prior decisions, inspect lessons/constraints, verify claims, or record durable knowledge.\n"
-                "- **Provenance**: Treat retrieved memory as contextual evidence to be verified, not unquestionable ground truth.\n",
-                encoding="utf-8",
-            )
+        # 6. Create cortex-awareness rule if missing
+        rule_file = plugin_dir / "rules" / "cortex-awareness.md"
+        if not rule_file.exists() or force:
+            rule_content = """# CORTEX Awareness
 
-        # Write default skill files
-        skills_templates = {
-            "cortex-memory": "---\nname: cortex-memory\ndescription: Inspect and retrieve project memory, prior decisions, constraints, failures, lessons, and claims from CORTEX storage.\n---\n\n# CORTEX Memory Retrieval Skill\n\nUse this skill when you need historical context, recorded decisions, architectural constraints, past failures, or verified claims.\n",
-            "cortex-review": "---\nname: cortex-review\ndescription: Inspect evidence, diffs, test logs, and claims to identify regressions, constraint violations, and verification gaps.\n---\n\n# CORTEX Review Skill\n\nUse this skill when auditing changes against established project constraints, verifying claims, or reviewing test evidence.\n",
-            "cortex-learning": "---\nname: cortex-learning\ndescription: Record durable decisions, constraints, failures, lessons, and claims into persistent CORTEX storage.\n---\n\n# CORTEX Learning & Knowledge Recording Skill\n\nUse this skill at the conclusion of tasks or milestones to persist durable knowledge and verified outcomes.\n",
+CORTEX is active in this workspace to provide persistent project memory, event tracking, and evidence retrieval.
+
+- **Agent Responsibility**: You (the Agent) remain fully responsible for reasoning, interpretation, planning, decisions, coding, and final judgment. CORTEX is your tool and evidence substrate, not an autonomous decision authority.
+- **Roles & Capabilities**: When helpful, you may transition roles (`APP`, `MEMORY`, `REVIEW`, `LEARNING`) using CORTEX skills and tools to query prior decisions, inspect lessons/constraints, verify claims, or record durable knowledge.
+- **Provenance**: Treat retrieved memory as contextual evidence to be verified, not unquestionable ground truth.
+"""
+            rule_file.write_text(rule_content, encoding="utf-8")
+
+        # 7. Create skills directories and SKILL.md templates if missing
+        skill_templates = {
+            "cortex-memory": """---
+name: cortex-memory
+description: Inspect and retrieve project memory, prior decisions, constraints, failures, lessons, and claims from CORTEX storage.
+---
+# CORTEX Memory Skill
+Use cortex_search and cortex_get to inspect persistent memory and retrieve architectural evidence.
+""",
+            "cortex-review": """---
+name: cortex-review
+description: Inspect evidence, diffs, test logs, and claims to identify regressions, constraint violations, and verification gaps.
+---
+# CORTEX Review Skill
+Use cortex_check_claim_freshness and cortex_search to inspect constraints and verify claims.
+""",
+            "cortex-learning": """---
+name: cortex-learning
+description: Record durable decisions, constraints, failures, lessons, and claims into persistent CORTEX storage.
+---
+# CORTEX Learning Skill
+Use cortex_record_knowledge and cortex_record_event to persist durable engineering knowledge.
+""",
         }
-
-        for skill_name, content in skills_templates.items():
-            s_file = plugin_dir / "skills" / skill_name / "SKILL.md"
+        for skill_name, content in skill_templates.items():
+            s_dir = plugin_dir / "skills" / skill_name
+            s_dir.mkdir(parents=True, exist_ok=True)
+            s_file = s_dir / "SKILL.md"
             if not s_file.exists() or force:
                 s_file.write_text(content, encoding="utf-8")
 
-        # Build initial index
+        # Build initial indexes
         self.indexer.rebuild_from_canonical(self.storage)
+        from .retrieval_benchmark import SemanticVectorIndex
+        vindex = SemanticVectorIndex(db_path=self.cortex_dir / "indexes" / "vector.db")
+        vindex.rebuild(self.storage)
 
         return {
             "status": "initialized",
@@ -241,14 +286,17 @@ class CortexCLI:
             "plugin_dir": str(plugin_dir),
         }
 
-    def cmd_search(self, query: str, limit: int = 10) -> Dict[str, Any]:
-        """Perform CLI search query."""
-        return self.api.search(query=query, limit=limit, role="MEMORY")
+    def cmd_search(self, query: str, limit: int = 10, policy: str = "hybrid") -> Dict[str, Any]:
+        """Perform CLI search query using hybrid router."""
+        return self.api.search(query=query, limit=limit, role="MEMORY", policy=policy)
 
     def cmd_reindex(self) -> Dict[str, Any]:
-        """Rebuild derived SQLite FTS5 index from canonical storage."""
-        count = self.indexer.rebuild_from_canonical(self.storage)
-        return {"status": "reindexed", "indexed_records": count}
+        """Rebuild derived SQLite FTS5 and Semantic Vector indexes from canonical storage."""
+        count_fts = self.indexer.rebuild_from_canonical(self.storage)
+        from .retrieval_benchmark import SemanticVectorIndex
+        vindex = SemanticVectorIndex(db_path=self.cortex_dir / "indexes" / "vector.db")
+        count_vec = vindex.rebuild(self.storage)
+        return {"status": "reindexed", "indexed_fts": count_fts, "indexed_vector": count_vec}
 
 
 def main(args: Optional[List[str]] = None) -> int:

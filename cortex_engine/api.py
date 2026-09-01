@@ -6,6 +6,7 @@ import uuid
 from typing import Any, List, Optional
 
 from .compiler import CompiledContext, ContextCompiler
+from .hybrid_router import HybridRetrievalRouter, RouterPolicy
 from .indexer import CortexIndexer
 from .models import (
     Claim,
@@ -20,17 +21,19 @@ from .storage import CortexStorage
 
 
 class CortexAPI:
-    """Standard callable API for CORTEX tools with SQLite FTS5 acceleration."""
+    """Standard callable API for CORTEX tools with deterministic Hybrid Retrieval acceleration."""
 
     def __init__(
         self,
         storage: Optional[CortexStorage] = None,
         indexer: Optional[CortexIndexer] = None,
         compiler: Optional[ContextCompiler] = None,
+        router: Optional[HybridRetrievalRouter] = None,
     ):
         self.storage = storage or CortexStorage()
         self.indexer = indexer or CortexIndexer(storage=self.storage)
         self.compiler = compiler or ContextCompiler(storage=self.storage)
+        self.router = router or HybridRetrievalRouter(storage=self.storage, indexer=self.indexer)
 
     def record_event(
         self,
@@ -229,11 +232,20 @@ class CortexAPI:
         limit: int = 10,
         task_id: Optional[str] = None,
         role: str = "MEMORY",
+        policy: str = "hybrid",
     ) -> dict[str, Any]:
-        """Search knowledge using fast SQLite FTS5 with fallback to canonical storage scan."""
-        matched_items = self.indexer.search_knowledge(query, category=category, limit=limit)
+        """Search knowledge using deterministic Hybrid Retrieval (FTS + Lexical + Semantic fallback)."""
+        routed_data = self.router.search(query=query, policy=policy, limit=limit)
+        matched_items = routed_data.get("results", [])
 
-        # Fallback to filesystem scan if FTS index was not yet populated / query empty
+        # Optional category filter
+        if category:
+            matched_items = [
+                r for r in matched_items
+                if r.get("type") == category or category.lower() in r.get("id", "").lower()
+            ]
+
+        # Fallback to filesystem scan if derived index was not yet populated / query empty
         if not matched_items and not self.indexer.db_path.exists():
             items = self.storage.list_knowledge(category)
             query_lower = query.lower()
@@ -246,8 +258,10 @@ class CortexAPI:
 
         result_payload = {
             "query": query,
-            "results": matched_items,
+            "policy": routed_data.get("policy", policy),
             "count": len(matched_items),
+            "results": matched_items,
+            "routing_trace": routed_data.get("routing_trace", {}),
         }
 
         # Record observable memory retrieval event
@@ -256,8 +270,10 @@ class CortexAPI:
             role=role,
             payload={
                 "query": query,
+                "policy": routed_data.get("policy", policy),
                 "result_ids": [r["id"] for r in matched_items],
                 "count": len(matched_items),
+                "routing_trace": routed_data.get("routing_trace", {}),
             },
             task_id=task_id,
         )

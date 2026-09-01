@@ -13,7 +13,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .api import CortexAPI
 from .indexer import CortexIndexer
 from .models import Claim, Knowledge
 from .storage import CortexStorage
@@ -410,6 +409,7 @@ class RetrievalBenchmarkRunner:
         self.storage = CortexStorage(cortex_dir=self.workspace_dir / ".cortex")
         self.indexer = CortexIndexer(storage=self.storage)
         self.vector_index = SemanticVectorIndex(db_path=self.workspace_dir / ".cortex" / "indexes" / "vector.db")
+        from .api import CortexAPI
         self.api = CortexAPI(storage=self.storage, indexer=self.indexer)
 
     def setup_benchmark(self) -> Tuple[int, List[BenchmarkQuery]]:
@@ -421,13 +421,13 @@ class RetrievalBenchmarkRunner:
 
     def execute_query_condition_a_fts(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Condition A: Pure SQLite FTS5 baseline."""
-        res = self.api.search(query=query, limit=limit, role="MEMORY")
+        res = self.api.search(query=query, limit=limit, role="MEMORY", policy="fts")
         return res["results"]
 
     def execute_query_condition_b_lexical_expansion(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Condition B: FTS5 with explicit deterministic lexical expansion."""
         # 1. Base query search
-        base_results = self.api.search(query=query, limit=limit, role="MEMORY").get("results", [])
+        base_results = self.api.search(query=query, limit=limit, role="MEMORY", policy="fts").get("results", [])
 
         # 2. Extract synonyms
         words = re.findall(r"\b\w+\b", query.lower())
@@ -445,7 +445,7 @@ class RetrievalBenchmarkRunner:
         for syn in synonym_queries[:6]:
             if len(merged_results) >= limit:
                 break
-            syn_res = self.api.search(query=syn, limit=limit, role="MEMORY").get("results", [])
+            syn_res = self.api.search(query=syn, limit=limit, role="MEMORY", policy="fts").get("results", [])
             for r in syn_res:
                 if r["id"] not in seen_ids:
                     seen_ids.add(r["id"])
