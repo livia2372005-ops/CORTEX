@@ -120,16 +120,22 @@ class CortexStorage:
             cat_dir = CATEGORY_MAP.get(category.lower(), category)
             file_path = self.knowledge_dir / cat_dir / f"{item_id}.json"
             if file_path.exists():
-                with open(file_path, "r", encoding="utf-8") as f:
-                    return Knowledge.from_dict(json.load(f))
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        return Knowledge.from_dict(json.load(f))
+                except Exception:
+                    return None
             return None
 
         # Search all categories if category is not specified
         for cat in set(CATEGORY_MAP.values()):
             file_path = self.knowledge_dir / cat / f"{item_id}.json"
             if file_path.exists():
-                with open(file_path, "r", encoding="utf-8") as f:
-                    return Knowledge.from_dict(json.load(f))
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        return Knowledge.from_dict(json.load(f))
+                except Exception:
+                    return None
         return None
 
     def list_knowledge(self, category: Optional[str] = None) -> List[Knowledge]:
@@ -169,8 +175,11 @@ class CortexStorage:
         target_file = self.knowledge_dir / "claims" / f"{claim_id}.json"
         if not target_file.exists():
             return None
-        with open(target_file, "r", encoding="utf-8") as f:
-            return Claim.from_dict(json.load(f))
+        try:
+            with open(target_file, "r", encoding="utf-8") as f:
+                return Claim.from_dict(json.load(f))
+        except Exception:
+            return None
 
     def list_claims(self, status: Optional[str] = None) -> List[Claim]:
         """List all claims with optional status filtering."""
