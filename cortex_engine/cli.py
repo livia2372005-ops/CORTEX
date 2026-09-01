@@ -298,6 +298,49 @@ Use cortex_record_knowledge and cortex_record_event to persist durable engineeri
         count_vec = vindex.rebuild(self.storage)
         return {"status": "reindexed", "indexed_fts": count_fts, "indexed_vector": count_vec}
 
+    def cmd_candidates(self) -> List[Dict[str, Any]]:
+        """Detect and return memory candidates from observable events."""
+        return self.api.detect_candidates()
+
+    def cmd_promote(
+        self,
+        knowledge_type: str,
+        title: str,
+        content: str,
+        event_ids: Optional[List[str]] = None,
+        candidate_id: Optional[str] = None,
+        id: Optional[str] = None,
+        status: str = "active",
+        supersedes: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Promote candidate or events to persistent knowledge."""
+        if candidate_id:
+            return self.api.promote_candidate(
+                candidate_dict_or_id=candidate_id,
+                knowledge_id=id,
+                custom_title=title,
+                custom_content=content,
+                status=status,
+                supersedes=supersedes,
+            )
+        return self.api.promote_memory(
+            event_ids=event_ids or [],
+            knowledge_type=knowledge_type,
+            title=title,
+            content=content,
+            knowledge_id=id,
+            status=status,
+            supersedes=supersedes,
+        )
+
+    def cmd_archive(self, knowledge_id: str, reason: str = "manual_archival") -> Optional[Dict[str, Any]]:
+        """Archive a knowledge record."""
+        return self.api.archive_knowledge(knowledge_id=knowledge_id, reason=reason)
+
+    def cmd_duplicates(self, title: str, content: str, threshold: float = 0.70) -> List[Dict[str, Any]]:
+        """Check duplicate or similar knowledge."""
+        return self.api.check_duplicates(title=title, content=content, threshold=threshold)
+
 
 def main(args: Optional[List[str]] = None) -> int:
     """Entry point for CORTEX CLI commands."""
@@ -327,6 +370,30 @@ def main(args: Optional[List[str]] = None) -> int:
 
     # cortex reindex
     subparsers.add_parser("reindex", help="Rebuild derived SQLite FTS5 index from canonical files")
+
+    # cortex candidates
+    subparsers.add_parser("candidates", help="List detected candidate memories awaiting promotion")
+
+    # cortex promote
+    promote_parser = subparsers.add_parser("promote", help="Promote candidate or events to persistent knowledge")
+    promote_parser.add_argument("--type", type=str, required=True, choices=["decision", "constraint", "failure", "lesson", "claim"], help="Knowledge type")
+    promote_parser.add_argument("--title", type=str, required=True, help="Knowledge title")
+    promote_parser.add_argument("--content", type=str, required=True, help="Knowledge content")
+    promote_parser.add_argument("--id", type=str, default=None, help="Explicit canonical ID")
+    promote_parser.add_argument("--candidate", type=str, default=None, help="Candidate ID to promote")
+    promote_parser.add_argument("--events", nargs="*", default=[], help="Event IDs to promote")
+    promote_parser.add_argument("--supersedes", type=str, default=None, help="Superseded knowledge ID")
+
+    # cortex archive
+    archive_parser = subparsers.add_parser("archive", help="Logically archive a knowledge record")
+    archive_parser.add_argument("id", type=str, help="Knowledge ID to archive")
+    archive_parser.add_argument("--reason", type=str, default="manual_archival", help="Archival reason")
+
+    # cortex duplicates
+    dup_parser = subparsers.add_parser("duplicates", help="Check duplicate or similar knowledge")
+    dup_parser.add_argument("--title", type=str, required=True, help="Knowledge title")
+    dup_parser.add_argument("--content", type=str, required=True, help="Knowledge content")
+    dup_parser.add_argument("--threshold", type=float, default=0.70, help="Similarity threshold")
 
     parsed = parser.parse_args(args)
 
@@ -374,7 +441,46 @@ def main(args: Optional[List[str]] = None) -> int:
 
     elif parsed.command == "reindex":
         res = cli.cmd_reindex()
-        print(f"Reindexed {res['indexed_records']} canonical records successfully.")
+        print(f"Reindexed {res.get('indexed_fts', 0)} FTS and {res.get('indexed_vector', 0)} Vector records successfully.")
+        return 0
+
+    elif parsed.command == "candidates":
+        cands = cli.cmd_candidates()
+        print(f"\n--- Detected Memory Candidates ({len(cands)}) ---")
+        for c in cands:
+            print(f"[{c['id']}] ({c['candidate_type'].upper()}) Reason: {c['reason']}")
+            print(f"  Summary: {c['summary']}")
+            print(f"  Events:  {', '.join(c['event_ids'])}")
+        print()
+        return 0
+
+    elif parsed.command == "promote":
+        res = cli.cmd_promote(
+            knowledge_type=parsed.type,
+            title=parsed.title,
+            content=parsed.content,
+            event_ids=parsed.events,
+            candidate_id=parsed.candidate,
+            id=parsed.id,
+            supersedes=parsed.supersedes,
+        )
+        print(f"Promoted to [{res['id']}] ({res['type'].upper()}): {res['title']}")
+        return 0
+
+    elif parsed.command == "archive":
+        res = cli.cmd_archive(knowledge_id=parsed.id, reason=parsed.reason)
+        if res:
+            print(f"Record [{res['id']}] archived successfully.")
+        else:
+            print(f"Record [{parsed.id}] not found.")
+        return 0
+
+    elif parsed.command == "duplicates":
+        dups = cli.cmd_duplicates(title=parsed.title, content=parsed.content, threshold=parsed.threshold)
+        print(f"\n--- Duplicate / Similar Knowledge Records ({len(dups)}) ---")
+        for d in dups:
+            print(f"[{d['id']}] ({d['type'].upper()}) Similarity: {d['similarity']:.2f} — {d['title']}")
+        print()
         return 0
 
     else:

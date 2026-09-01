@@ -50,6 +50,7 @@ class Knowledge:
     created_at: str = field(default_factory=utc_now_iso)
     provenance: Optional[dict[str, Any]] = None
     supersedes: Optional[str] = None
+    derived_from: Optional[List[str]] = None
     related: Optional[List[str]] = None
     affects: Optional[List[str]] = None
     evidence: Optional[List[dict[str, Any]]] = None
@@ -70,9 +71,41 @@ class Knowledge:
             created_at=data.get("created_at", utc_now_iso()),
             provenance=data.get("provenance"),
             supersedes=data.get("supersedes"),
+            derived_from=data.get("derived_from"),
             related=data.get("related"),
             affects=data.get("affects"),
             evidence=data.get("evidence"),
+        )
+
+
+@dataclass
+class MemoryCandidate:
+    """Potential knowledge item detected from observable events awaiting Agent judgment."""
+    id: str
+    event_ids: List[str]
+    candidate_type: str  # decision, constraint, failure, lesson, claim
+    summary: str
+    reason: str  # e.g., 'repeated_failure_pattern', 'architectural_decision_signal', 'constraint_added'
+    evidence: List[dict[str, Any]] = field(default_factory=list)
+    suggested_title: str = ""
+    suggested_content: str = ""
+    created_at: str = field(default_factory=utc_now_iso)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MemoryCandidate:
+        return cls(
+            id=data["id"],
+            event_ids=data.get("event_ids", []),
+            candidate_type=data.get("candidate_type", "knowledge"),
+            summary=data.get("summary", ""),
+            reason=data.get("reason", "unknown"),
+            evidence=data.get("evidence", []),
+            suggested_title=data.get("suggested_title", ""),
+            suggested_content=data.get("suggested_content", ""),
+            created_at=data.get("created_at", utc_now_iso()),
         )
 
 

@@ -8,11 +8,13 @@ from typing import Any, List, Optional
 from .compiler import CompiledContext, ContextCompiler
 from .hybrid_router import HybridRetrievalRouter, RouterPolicy
 from .indexer import CortexIndexer
+from .lifecycle import MemoryLifecycleManager
 from .models import (
     Claim,
     ContextPackage,
     Event,
     Knowledge,
+    MemoryCandidate,
     RoleContext,
     RoleResult,
     utc_now_iso,
@@ -29,11 +31,13 @@ class CortexAPI:
         indexer: Optional[CortexIndexer] = None,
         compiler: Optional[ContextCompiler] = None,
         router: Optional[HybridRetrievalRouter] = None,
+        lifecycle: Optional[MemoryLifecycleManager] = None,
     ):
         self.storage = storage or CortexStorage()
         self.indexer = indexer or CortexIndexer(storage=self.storage)
         self.compiler = compiler or ContextCompiler(storage=self.storage)
         self.router = router or HybridRetrievalRouter(storage=self.storage, indexer=self.indexer)
+        self.lifecycle = lifecycle or MemoryLifecycleManager(storage=self.storage, indexer=self.indexer)
 
     def record_event(
         self,
@@ -435,3 +439,90 @@ class CortexAPI:
         )
 
         return new_context
+
+    def detect_candidates(self, events: Optional[List[Event]] = None) -> List[dict[str, Any]]:
+        """Detect candidate memories from observable events."""
+        candidates = self.lifecycle.detect_candidates(events=events)
+        return [c.to_dict() for c in candidates]
+
+    def promote_candidate(
+        self,
+        candidate_dict_or_id: str | dict[str, Any],
+        knowledge_id: Optional[str] = None,
+        custom_title: Optional[str] = None,
+        custom_content: Optional[str] = None,
+        status: str = "active",
+        supersedes: Optional[str] = None,
+        provenance: Optional[dict[str, Any]] = None,
+        related: Optional[List[str]] = None,
+        affects: Optional[List[str]] = None,
+    ) -> dict[str, Any]:
+        """Promote a memory candidate into persistent knowledge."""
+        if isinstance(candidate_dict_or_id, str):
+            # Lookup candidate from current event log
+            candidates = self.lifecycle.detect_candidates()
+            matching = [c for c in candidates if c.id == candidate_dict_or_id]
+            if not matching:
+                raise ValueError(f"Candidate '{candidate_dict_or_id}' not found in observable event stream.")
+            candidate = matching[0]
+        else:
+            candidate = MemoryCandidate.from_dict(candidate_dict_or_id)
+
+        promoted = self.lifecycle.promote_candidate(
+            candidate=candidate,
+            knowledge_id=knowledge_id,
+            custom_title=custom_title,
+            custom_content=custom_content,
+            status=status,
+            supersedes=supersedes,
+            provenance=provenance,
+            related=related,
+            affects=affects,
+        )
+        return promoted.to_dict()
+
+    def promote_memory(
+        self,
+        event_ids: List[str],
+        knowledge_type: str,
+        title: str,
+        content: str,
+        knowledge_id: Optional[str] = None,
+        status: str = "active",
+        supersedes: Optional[str] = None,
+        provenance: Optional[dict[str, Any]] = None,
+        related: Optional[List[str]] = None,
+        affects: Optional[List[str]] = None,
+    ) -> dict[str, Any]:
+        """Directly promote raw observable events to persistent knowledge upon explicit Agent command."""
+        promoted = self.lifecycle.promote_events(
+            event_ids=event_ids,
+            knowledge_type=knowledge_type,
+            title=title,
+            content=content,
+            knowledge_id=knowledge_id,
+            status=status,
+            supersedes=supersedes,
+            provenance=provenance,
+            related=related,
+            affects=affects,
+        )
+        return promoted.to_dict()
+
+    def check_duplicates(
+        self,
+        title: str,
+        content: str,
+        threshold: float = 0.70,
+    ) -> List[dict[str, Any]]:
+        """Identify potentially duplicate or highly similar active knowledge without destructive merging."""
+        return self.lifecycle.detect_duplicates(title=title, content=content, threshold=threshold)
+
+    def archive_knowledge(
+        self,
+        knowledge_id: str,
+        reason: str = "manual_archival",
+    ) -> Optional[dict[str, Any]]:
+        """Logically archive a persistent knowledge record without deleting history."""
+        archived = self.lifecycle.archive_knowledge(knowledge_id=knowledge_id, reason=reason)
+        return archived.to_dict() if archived else None

@@ -176,6 +176,104 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
             "required": ["task", "memory_ids"],
         },
     },
+    {
+        "name": "cortex_detect_candidates",
+        "description": "Scan observable events and identify candidate memories (e.g. repeated failures, architecture signals) awaiting Agent promotion.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "cortex_promote_memory",
+        "description": "Promote candidate memories or raw event IDs directly to persistent knowledge under explicit Agent authority.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "event_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Source observable event IDs (e.g., ['evt-100', 'evt-101']).",
+                },
+                "candidate_id": {
+                    "type": "string",
+                    "description": "Optional detected candidate ID to promote.",
+                },
+                "knowledge_type": {
+                    "type": "string",
+                    "description": "Knowledge type: 'decision', 'constraint', 'failure', 'lesson', 'claim'.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Durable knowledge title.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Detailed markdown explanation.",
+                },
+                "id": {
+                    "type": "string",
+                    "description": "Optional specific canonical ID (e.g., 'DEC-018'). Auto-assigned if omitted.",
+                },
+                "status": {
+                    "type": "string",
+                    "description": "Initial status (default: 'active').",
+                    "default": "active",
+                },
+                "supersedes": {
+                    "type": "string",
+                    "description": "Optional ID of an older knowledge record that this new record supersedes.",
+                },
+                "provenance": {
+                    "type": "object",
+                    "description": "Optional provenance metadata.",
+                },
+            },
+            "required": ["knowledge_type", "title", "content"],
+        },
+    },
+    {
+        "name": "cortex_check_duplicates",
+        "description": "Check if a proposed knowledge item is similar or duplicate to existing active knowledge without destructive merging.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Proposed knowledge title.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Proposed knowledge content.",
+                },
+                "threshold": {
+                    "type": "number",
+                    "description": "Similarity threshold (default: 0.70).",
+                    "default": 0.70,
+                },
+            },
+            "required": ["title", "content"],
+        },
+    },
+    {
+        "name": "cortex_archive_memory",
+        "description": "Logically archive a persistent knowledge record without deleting historical files.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Knowledge ID to archive (e.g., 'DEC-002').",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional reason for archival.",
+                    "default": "manual_archival",
+                },
+            },
+            "required": ["id"],
+        },
+    },
 ]
 
 
@@ -347,6 +445,62 @@ class CortexMCPServer:
             budget = int(args.get("budget_tokens", 500))
             role = args.get("role", "APP")
             return self.api.compile_context(task=task, memory_ids=memory_ids, budget_tokens=budget, role=role)
+
+        elif name == "cortex_detect_candidates":
+            return {"candidates": self.api.detect_candidates()}
+
+        elif name == "cortex_promote_memory":
+            k_type = args.get("knowledge_type")
+            title = args.get("title")
+            content = args.get("content")
+            if not k_type or not title or not content:
+                raise ValueError("Parameters 'knowledge_type', 'title', and 'content' are required for cortex_promote_memory.")
+            event_ids = args.get("event_ids") or []
+            cand_id = args.get("candidate_id")
+            k_id = args.get("id")
+            status = args.get("status", "active")
+            supersedes = args.get("supersedes")
+            provenance = args.get("provenance")
+
+            if cand_id:
+                return self.api.promote_candidate(
+                    candidate_dict_or_id=cand_id,
+                    knowledge_id=k_id,
+                    custom_title=title,
+                    custom_content=content,
+                    status=status,
+                    supersedes=supersedes,
+                    provenance=provenance,
+                )
+            else:
+                return self.api.promote_memory(
+                    event_ids=event_ids,
+                    knowledge_type=k_type,
+                    title=title,
+                    content=content,
+                    knowledge_id=k_id,
+                    status=status,
+                    supersedes=supersedes,
+                    provenance=provenance,
+                )
+
+        elif name == "cortex_check_duplicates":
+            title = args.get("title")
+            content = args.get("content")
+            if not title or not content:
+                raise ValueError("Parameters 'title' and 'content' are required for cortex_check_duplicates.")
+            threshold = float(args.get("threshold", 0.70))
+            return {"duplicates": self.api.check_duplicates(title=title, content=content, threshold=threshold)}
+
+        elif name == "cortex_archive_memory":
+            item_id = args.get("id")
+            if not item_id:
+                raise ValueError("Parameter 'id' is required for cortex_archive_memory.")
+            reason = args.get("reason", "manual_archival")
+            archived = self.api.archive_knowledge(knowledge_id=item_id, reason=reason)
+            if archived is None:
+                return {"found": False, "id": item_id, "message": "Record not found"}
+            return {"archived": True, "record": archived}
 
         else:
             raise ValueError(f"Unknown tool name: {name}")
