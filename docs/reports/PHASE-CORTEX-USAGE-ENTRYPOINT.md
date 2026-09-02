@@ -1,4 +1,4 @@
-# CORTEX Phase Report — Agent Entry Point (`CORTEX_USAGE.md`)
+ # CORTEX Phase Report — Agent Entry Point (`CORTEX_USAGE.md`)
 
 **Phase**: Agent Entry Point (`CORTEX_USAGE.md`)  
 **Date**: 2026-09-02  

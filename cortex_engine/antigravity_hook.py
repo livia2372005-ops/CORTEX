@@ -14,11 +14,11 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .models import ActivityEvent, utc_now_iso
 from .redaction import redact_data, redact_text
-from .storage import CortexStorage
+from .storage import CortexStorage, normalize_workspace_path
 
 
 def extract_target(tool_name: str, tool_args: Dict[str, Any]) -> str:
@@ -27,23 +27,25 @@ def extract_target(tool_name: str, tool_args: Dict[str, Any]) -> str:
         return tool_name
 
     if tool_name == "run_command":
-        return str(tool_args.get("CommandLine", tool_name))
+        return str(tool_args.get("CommandLine") or tool_args.get("command") or tool_args.get("cmd") or tool_name)
     elif tool_name in {"view_file", "view_symbol", "show_definition"}:
-        return str(tool_args.get("AbsolutePath", tool_args.get("TargetFile", tool_name)))
+        return str(tool_args.get("AbsolutePath") or tool_args.get("TargetFile") or tool_args.get("file_path") or tool_name)
     elif tool_name in {"replace_file_content", "multi_replace_file_content", "write_to_file"}:
-        return str(tool_args.get("TargetFile", tool_args.get("AbsolutePath", tool_name)))
+        return str(tool_args.get("TargetFile") or tool_args.get("AbsolutePath") or tool_args.get("file_path") or tool_name)
     elif tool_name in {"grep_search", "find_by_name"}:
-        path = tool_args.get("SearchPath", "")
-        query = tool_args.get("Query", "")
+        path = tool_args.get("SearchPath") or tool_args.get("path") or ""
+        query = tool_args.get("Query") or tool_args.get("query") or ""
         return f"{path} (query: {query})" if path or query else tool_name
     elif tool_name == "read_url_content":
-        return str(tool_args.get("Url", tool_name))
+        return str(tool_args.get("Url") or tool_args.get("url") or tool_name)
+    elif tool_name in {"list_dir", "list_directory"}:
+        return str(tool_args.get("DirectoryPath") or tool_args.get("path") or tool_name)
     elif tool_name.startswith("mcp_") or tool_name.startswith("cortex_"):
         return tool_name
 
-    # Generic: pick first recognizable path or name argument
-    for key in ("TargetFile", "AbsolutePath", "DirectoryPath", "Url", "CommandLine", "query", "id"):
-        if key in tool_args:
+    # Generic fallback: inspect recognizable target arguments
+    for key in ("TargetFile", "AbsolutePath", "DirectoryPath", "Url", "CommandLine", "path", "file", "query", "id"):
+        if key in tool_args and tool_args[key]:
             return str(tool_args[key])
     return tool_name
 
@@ -73,13 +75,71 @@ def sanitize_args_metadata(tool_args: Dict[str, Any]) -> Dict[str, Any]:
     return redact_data(summary)
 
 
-def resolve_cortex_storage(workspace_paths: Optional[list[str]] = None) -> CortexStorage:
-    """Resolve storage instance from workspace paths or current directory."""
-    if workspace_paths:
-        for wp in workspace_paths:
-            p = Path(wp) / ".cortex"
-            if p.exists() or p.parent.exists():
-                return CortexStorage(cortex_dir=p)
+def find_cortex_dir(candidate_paths: List[str | Path]) -> Optional[Path]:
+    """Climb path hierarchies of candidate paths to locate active .cortex storage directory."""
+    for candidate in candidate_paths:
+        if not candidate:
+            continue
+        try:
+            norm = normalize_workspace_path(candidate)
+            if not norm:
+                continue
+            p = Path(norm).resolve()
+
+            # 1. Direct .cortex directory
+            if p.name == ".cortex" and p.is_dir():
+                return p
+
+            # 2. Candidate workspace root containing .cortex
+            cortex_sub = p / ".cortex"
+            if cortex_sub.is_dir():
+                return cortex_sub
+
+            # 3. Climb up parents if candidate is a subpath or file
+            curr = p if p.is_dir() else p.parent
+            for parent in [curr] + list(curr.parents):
+                cortex_parent = parent / ".cortex"
+                if cortex_parent.is_dir():
+                    return cortex_parent
+        except Exception:
+            continue
+    return None
+
+
+def resolve_cortex_storage(data: Dict[str, Any], tool_args: Dict[str, Any]) -> CortexStorage:
+    """Resolve storage instance from hook payload metadata, tool file args, or current directory."""
+    candidates: List[str | Path] = []
+
+    # 1. Workspace paths passed by Antigravity in various formats
+    for key in ("workspacePaths", "workspace_paths", "workspaces"):
+        ws_list = data.get(key)
+        if isinstance(ws_list, list):
+            candidates.extend(ws_list)
+
+    for key in ("workspaceRoot", "workspace_root", "workspace", "workspacePath", "workspace_path", "cwd"):
+        val = data.get(key)
+        if isinstance(val, str) and val.strip():
+            candidates.append(val.strip())
+
+    # 2. File paths from tool arguments (TargetFile, AbsolutePath, etc.)
+    for key in ("TargetFile", "AbsolutePath", "DirectoryPath", "SearchPath", "file_path", "path"):
+        val = tool_args.get(key)
+        if isinstance(val, str) and val.strip():
+            candidates.append(val.strip())
+
+    # 3. Environment variables
+    for env_var in ("CORTEX_WORKSPACE", "WORKSPACE_ROOT", "PROJECT_ROOT"):
+        val = os.environ.get(env_var)
+        if val:
+            candidates.append(val)
+
+    # 4. Current working directory
+    candidates.append(Path.cwd())
+
+    # Find the nearest valid .cortex directory
+    found = find_cortex_dir(candidates)
+    if found:
+        return CortexStorage(cortex_dir=found)
     return CortexStorage()
 
 
@@ -97,19 +157,65 @@ def process_hook_payload(event_type: str, payload_str: str) -> Dict[str, Any]:
         return default_response
 
     try:
-        conversation_id = data.get("conversationId", data.get("conversation_id"))
-        step_idx = data.get("stepIdx", data.get("step_index"))
-        workspace_paths = data.get("workspacePaths", [])
-        tool_call = data.get("toolCall", {})
-        tool_name = tool_call.get("name") or data.get("tool_name") or data.get("name") or "unknown_tool"
-        tool_args = tool_call.get("args") or data.get("args") or {}
-        error_val = data.get("error")
+        # Resolve conversation_id across key variations
+        conversation_id = (
+            data.get("conversationId")
+            or data.get("conversation_id")
+            or data.get("conversation")
+            or data.get("sessionId")
+            or data.get("session_id")
+            or data.get("session")
+            or None
+        )
 
-        storage = resolve_cortex_storage(workspace_paths)
+        # Resolve step index across key variations (handle 0 correctly)
+        step_idx = None
+        for k in ("stepIdx", "step_index", "stepIndex", "step_idx", "step"):
+            if k in data and data[k] is not None:
+                step_idx = data[k]
+                break
+
+        # Resolve tool call and arguments across key variations
+        tool_call = data.get("toolCall") or data.get("tool_call") or data.get("call") or {}
+        tool_name = (
+            tool_call.get("name")
+            or data.get("tool_name")
+            or data.get("toolName")
+            or data.get("name")
+            or data.get("tool")
+            or "unknown_tool"
+        )
+        tool_args = (
+            tool_call.get("args")
+            or data.get("tool_args")
+            or data.get("toolArgs")
+            or data.get("args")
+            or data.get("input")
+            or data.get("arguments")
+            or data.get("parameters")
+            or data.get("tool_input")
+            or data.get("toolInput")
+            or {}
+        )
+
+        # Resolve error value across key variations
+        error_val = (
+            data.get("error")
+            or data.get("error_message")
+            or data.get("errorMessage")
+            or data.get("error_type")
+            or data.get("errorType")
+            or None
+        )
+
+        # Resolve workspace storage
+        storage = resolve_cortex_storage(data, tool_args)
         target = extract_target(tool_name, tool_args)
         correlation_id = f"step-{conversation_id}-{step_idx}" if conversation_id and step_idx is not None else None
 
-        active_anchor = storage.get_active_task_anchor(conversation_id=conversation_id)
+        # Resolve active task anchor for this conversation/workspace
+        workspace_str = str(storage.workspace_root)
+        active_anchor = storage.get_active_task_anchor(conversation_id=conversation_id, workspace=workspace_str)
         anchor_id = active_anchor.anchor_id if active_anchor else None
 
         if event_type == "pre":

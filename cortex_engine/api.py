@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from typing import Any, List, Optional
 
 from .compiler import CompiledContext, ContextCompiler
@@ -35,8 +36,16 @@ class CortexAPI:
         compiler: Optional[ContextCompiler] = None,
         router: Optional[HybridRetrievalRouter] = None,
         lifecycle: Optional[MemoryLifecycleManager] = None,
+        workspace_root: Optional[Path | str] = None,
     ):
-        self.storage = storage or CortexStorage()
+        if storage:
+            self.storage = storage
+        elif workspace_root:
+            self.storage = CortexStorage(cortex_dir=Path(workspace_root) / ".cortex")
+        else:
+            self.storage = CortexStorage()
+
+        self.workspace_root = self.storage.workspace_root
         self.indexer = indexer or CortexIndexer(storage=self.storage)
         self.compiler = compiler or ContextCompiler(storage=self.storage)
         self.router = router or HybridRetrievalRouter(storage=self.storage, indexer=self.indexer)
@@ -555,7 +564,7 @@ class CortexAPI:
             conversation_id=conversation_id,
             created_at=utc_now_iso(),
             status="active",
-            workspace=str(workspace or ""),
+            workspace=str(workspace or self.workspace_root),
             source=source,
             task_label=clean_label,
             prompt_hash=p_hash,

@@ -25,16 +25,33 @@ CATEGORY_MAP = {
 }
 
 
+def normalize_workspace_path(path_or_uri: Optional[str | Path]) -> str:
+    """Normalize workspace paths and URIs for robust cross-platform comparison."""
+    if not path_or_uri:
+        return ""
+    s = str(path_or_uri).strip()
+    if s.startswith("file:///"):
+        s = s[8:]
+    elif s.startswith("file://"):
+        s = s[7:]
+    try:
+        p = Path(s).resolve()
+        return str(p)
+    except Exception:
+        return s.replace("\\", "/").rstrip("/")
+
+
 class CortexStorage:
     """Manages raw durable file-based storage in .cortex/."""
 
     def __init__(self, cortex_dir: Optional[str | Path] = None):
         if cortex_dir is None:
             # Default to .cortex in current directory or relative to root
-            self.cortex_dir = Path.cwd() / ".cortex"
+            self.cortex_dir = (Path.cwd() / ".cortex").resolve()
         else:
             self.cortex_dir = Path(cortex_dir).resolve()
 
+        self.workspace_root = self.cortex_dir.parent
         self.events_dir = self.cortex_dir / "events"
         self.events_file = self.events_dir / "events.jsonl"
         self.activity_file = self.events_dir / "activity.jsonl"
@@ -156,13 +173,59 @@ class CortexStorage:
         workspace: Optional[str] = None,
     ) -> Optional[TaskAnchor]:
         """Retrieve the most recent active task anchor for a conversation or workspace."""
-        anchors = self.list_task_anchors(conversation_id=conversation_id, status="active")
-        if anchors:
-            return anchors[-1]
+        if not self.anchors_file.exists():
+            return None
+
+        anchors_map: dict[str, TaskAnchor] = {}
+        with open(self.anchors_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    anc = TaskAnchor.from_dict(data)
+                    anchors_map[anc.anchor_id] = anc
+                except Exception:
+                    continue
+
+        active_anchors = [anc for anc in anchors_map.values() if anc.status == "active"]
+        if not active_anchors:
+            return None
+
+        def workspace_matches(anc: TaskAnchor) -> bool:
+            if not workspace or not anc.workspace:
+                return True
+            w1 = normalize_workspace_path(anc.workspace).lower()
+            w2 = normalize_workspace_path(workspace).lower()
+            return w1 == w2 or w1.endswith(w2) or w2.endswith(w1)
+
+        # 1. Exact match on conversation_id (and compatible workspace)
         if conversation_id:
-            # Fallback to any active anchor if not found by exact conversation
-            all_active = self.list_task_anchors(status="active")
-            return all_active[-1] if all_active else None
+            conv_matches = [
+                anc for anc in active_anchors
+                if anc.conversation_id == conversation_id and workspace_matches(anc)
+            ]
+            if conv_matches:
+                return conv_matches[-1]
+
+            # 2. If no exact conversation match, match active anchors in same workspace
+            # that have no explicit conversation_id bound (e.g. started via CLI in this workspace)
+            unbound_matches = [
+                anc for anc in active_anchors
+                if (not anc.conversation_id) and workspace_matches(anc)
+            ]
+            if unbound_matches:
+                return unbound_matches[-1]
+
+            # Strict isolation: active anchors bound to a DIFFERENT conversation_id are not attached
+            return None
+
+        # 3. If no conversation_id supplied, match active anchors for this workspace
+        ws_matches = [anc for anc in active_anchors if workspace_matches(anc)]
+        if ws_matches:
+            return ws_matches[-1]
+
         return None
 
     def list_task_anchors(
