@@ -18,8 +18,10 @@ from .models import (
     MemoryCandidate,
     RoleContext,
     RoleResult,
+    TaskAnchor,
     utc_now_iso,
 )
+from .redaction import compute_prompt_hash, redact_data
 from .storage import CortexStorage
 
 
@@ -529,6 +531,98 @@ class CortexAPI:
         return archived.to_dict() if archived else None
 
     # -------------------------------------------------------------------------
+    # Task Boundary API
+    # -------------------------------------------------------------------------
+
+    def start_task(
+        self,
+        task_label: Optional[str] = None,
+        prompt: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        workspace: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        source: str = "python_api",
+        anchor_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Explicitly record a new engineering task boundary anchor without storing raw private prompts."""
+        aid = anchor_id or f"task-{uuid.uuid4().hex[:8]}"
+        p_hash = compute_prompt_hash(prompt) if prompt else None
+        clean_label = redact_data(task_label) if task_label else None
+        clean_meta = redact_data(metadata) if metadata else {}
+
+        anchor = TaskAnchor(
+            anchor_id=aid,
+            conversation_id=conversation_id,
+            created_at=utc_now_iso(),
+            status="active",
+            workspace=str(workspace or ""),
+            source=source,
+            task_label=clean_label,
+            prompt_hash=p_hash,
+            metadata=clean_meta,
+        )
+        self.storage.record_task_anchor(anchor)
+
+        # Automatically record a task_start activity event
+        self.record_activity(
+            action_type="task_start",
+            target=clean_label or aid,
+            anchor_id=aid,
+            conversation_id=conversation_id,
+            source=source,
+            status="started",
+            metadata={"task_label": clean_label, "prompt_hash": p_hash} if p_hash or clean_label else {},
+        )
+        return anchor.to_dict()
+
+    def end_task(
+        self,
+        anchor_id: str,
+        status: str = "completed",
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Close an active task boundary anchor and record task_end activity event."""
+        updated = self.storage.update_task_anchor(
+            anchor_id=anchor_id,
+            status=status,
+            ended_at=utc_now_iso(),
+            metadata=metadata,
+        )
+        if not updated:
+            return None
+
+        # Automatically record a task_end activity event
+        self.record_activity(
+            action_type="task_end",
+            target=anchor_id,
+            anchor_id=anchor_id,
+            conversation_id=updated.conversation_id,
+            source=updated.source,
+            status=status,
+            metadata=redact_data(metadata) if metadata else {},
+        )
+        return updated.to_dict()
+
+    def get_task(self, anchor_id: str) -> Optional[dict[str, Any]]:
+        """Retrieve a specific task boundary anchor by ID."""
+        anc = self.storage.get_task_anchor(anchor_id)
+        return anc.to_dict() if anc else None
+
+    def list_tasks(
+        self,
+        conversation_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: Optional[int] = 50,
+    ) -> List[dict[str, Any]]:
+        """List distinct task boundary anchors with optional conversation or status filter."""
+        anchors = self.storage.list_task_anchors(
+            conversation_id=conversation_id,
+            status=status,
+            limit=limit,
+        )
+        return [a.to_dict() for a in anchors]
+
+    # -------------------------------------------------------------------------
     # Activity Observability API
     # -------------------------------------------------------------------------
 
@@ -537,6 +631,7 @@ class CortexAPI:
         action_type: str,
         target: str,
         status: str = "success",
+        anchor_id: Optional[str] = None,
         session_id: Optional[str] = None,
         task_id: Optional[str] = None,
         conversation_id: Optional[str] = None,
@@ -553,11 +648,19 @@ class CortexAPI:
     ) -> dict[str, Any]:
         """Explicitly record an observable action or event in the canonical activity log."""
         event_id = id or f"act-{uuid.uuid4().hex[:10]}"
+        # If anchor_id not specified but active anchor exists for conversation, resolve it
+        resolved_anchor = anchor_id or task_id
+        if not resolved_anchor:
+            active = self.storage.get_active_task_anchor(conversation_id=conversation_id)
+            if active:
+                resolved_anchor = active.anchor_id
+
         act_event = ActivityEvent(
             event_id=event_id,
             timestamp=utc_now_iso(),
+            anchor_id=resolved_anchor,
             session_id=session_id,
-            task_id=task_id,
+            task_id=task_id or resolved_anchor,
             conversation_id=conversation_id,
             step_index=step_index,
             actor=actor,
@@ -578,6 +681,7 @@ class CortexAPI:
     def list_activity(
         self,
         task_id: Optional[str] = None,
+        anchor_id: Optional[str] = None,
         session_id: Optional[str] = None,
         conversation_id: Optional[str] = None,
         step_index: Optional[int] = None,
@@ -593,6 +697,7 @@ class CortexAPI:
         """Query observable activity events from canonical storage with filtering."""
         events = self.storage.read_activity(
             task_id=task_id,
+            anchor_id=anchor_id,
             session_id=session_id,
             conversation_id=conversation_id,
             step_index=step_index,

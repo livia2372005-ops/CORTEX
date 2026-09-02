@@ -39,6 +39,7 @@ htmlcov/
 
 # CORTEX Derived, Runtime & Ephemeral Data (reproducible via cortex reindex)
 .cortex/events/*.jsonl
+.cortex/state/*.jsonl
 .cortex/index/
 .cortex/indexes/
 .cortex/working/

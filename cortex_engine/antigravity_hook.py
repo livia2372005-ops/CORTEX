@@ -109,11 +109,16 @@ def process_hook_payload(event_type: str, payload_str: str) -> Dict[str, Any]:
         target = extract_target(tool_name, tool_args)
         correlation_id = f"step-{conversation_id}-{step_idx}" if conversation_id and step_idx is not None else None
 
+        active_anchor = storage.get_active_task_anchor(conversation_id=conversation_id)
+        anchor_id = active_anchor.anchor_id if active_anchor else None
+
         if event_type == "pre":
             event_id = f"act-pre-{uuid.uuid4().hex[:8]}"
             act_event = ActivityEvent(
                 event_id=event_id,
                 timestamp=utc_now_iso(),
+                anchor_id=anchor_id,
+                task_id=anchor_id,
                 conversation_id=conversation_id,
                 step_index=int(step_idx) if step_idx is not None else None,
                 actor="agent",
@@ -140,6 +145,8 @@ def process_hook_payload(event_type: str, payload_str: str) -> Dict[str, Any]:
             act_event = ActivityEvent(
                 event_id=event_id,
                 timestamp=utc_now_iso(),
+                anchor_id=anchor_id,
+                task_id=anchor_id,
                 conversation_id=conversation_id,
                 step_index=int(step_idx) if step_idx is not None else None,
                 actor="agent",

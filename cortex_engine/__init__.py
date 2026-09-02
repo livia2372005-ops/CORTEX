@@ -6,7 +6,7 @@ __schema_version__ = "1.0.0"
 from .api import CortexAPI
 from .compiler import CompiledContext, ContextCompiler
 from .indexer import CortexIndexer
-from .models import ActivityEvent, Claim, ContextPackage, Event, Evidence, Knowledge, RoleContext, RoleResult
+from .models import ActivityEvent, Claim, ContextPackage, Event, Evidence, Knowledge, RoleContext, RoleResult, TaskAnchor
 from .storage import CortexStorage
 
 __all__ = [
@@ -22,6 +22,7 @@ __all__ = [
     "Evidence",
     "Event",
     "ActivityEvent",
+    "TaskAnchor",
     "RoleContext",
     "RoleResult",
     "ContextPackage",

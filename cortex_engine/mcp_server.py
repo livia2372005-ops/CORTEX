@@ -276,27 +276,119 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "cortex_start_task",
+        "description": "Explicitly record the start of an engineering task boundary anchor.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_label": {
+                    "type": "string",
+                    "description": "Short descriptive label for the task (e.g., 'Fix auth middleware leak').",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Optional user prompt text (will be hashed deterministically; raw prompt is not stored).",
+                },
+                "conversation_id": {
+                    "type": "string",
+                    "description": "Optional active conversation ID.",
+                },
+                "anchor_id": {
+                    "type": "string",
+                    "description": "Optional custom task anchor ID (e.g., 'task-001').",
+                },
+                "metadata": {
+                    "type": "object",
+                    "description": "Optional non-sensitive metadata for the task.",
+                },
+            },
+        },
+    },
+    {
+        "name": "cortex_end_task",
+        "description": "Close an active task boundary anchor.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "anchor_id": {
+                    "type": "string",
+                    "description": "Task anchor ID to close.",
+                },
+                "status": {
+                    "type": "string",
+                    "description": "Final task status ('completed', 'failed', 'aborted').",
+                    "default": "completed",
+                },
+                "metadata": {
+                    "type": "object",
+                    "description": "Optional non-sensitive closing metadata.",
+                },
+            },
+            "required": ["anchor_id"],
+        },
+    },
+    {
+        "name": "cortex_get_task",
+        "description": "Retrieve task anchor state by ID.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "anchor_id": {
+                    "type": "string",
+                    "description": "Task anchor ID to inspect.",
+                },
+            },
+            "required": ["anchor_id"],
+        },
+    },
+    {
+        "name": "cortex_list_tasks",
+        "description": "List engineering task boundary anchors.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "conversation_id": {
+                    "type": "string",
+                    "description": "Filter by conversation ID.",
+                },
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status ('active', 'completed', 'failed').",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of task anchors to return (default: 50).",
+                    "default": 50,
+                },
+            },
+        },
+    },
+    {
         "name": "cortex_record_activity",
-        "description": "Record an observable Agent action, command execution, tool result, or file operation to the canonical activity log.",
+        "description": "Explicitly append an observable action or event to the canonical activity stream.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "action_type": {
                     "type": "string",
-                    "description": "Category of action: 'tool_call', 'tool_result', 'command_exec', 'file_read', 'file_write', 'file_delete', 'git_action', 'cortex_action', 'task_start', 'task_end', 'error'.",
+                    "description": "Action type (e.g., 'tool_call', 'command_exec', 'file_write', 'task_start', 'task_end').",
                 },
                 "target": {
                     "type": "string",
-                    "description": "Action resource or target (e.g., 'pytest tests/', 'src/auth.py', 'git commit').",
+                    "description": "Target resource or command string being operated on.",
+                },
+                "anchor_id": {
+                    "type": "string",
+                    "description": "Optional task anchor ID associating this activity with a task boundary.",
                 },
                 "status": {
                     "type": "string",
-                    "description": "Status of the action: 'success' (default), 'error', 'pending', 'interrupted'.",
+                    "description": "Action status ('success', 'error', 'started', 'pending').",
                     "default": "success",
                 },
                 "task_id": {
                     "type": "string",
-                    "description": "Optional associated task ID.",
+                    "description": "Optional task ID.",
                 },
                 "session_id": {
                     "type": "string",
@@ -304,15 +396,15 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
                 },
                 "duration_ms": {
                     "type": "number",
-                    "description": "Optional duration in milliseconds.",
+                    "description": "Execution duration in milliseconds.",
                 },
                 "metadata": {
                     "type": "object",
-                    "description": "Sanitized metadata describing the operation (e.g. exit code, byte count).",
+                    "description": "Optional non-sensitive metadata dictionary.",
                 },
                 "error_type": {
                     "type": "string",
-                    "description": "Optional sanitized error category.",
+                    "description": "Error classification or sanitized message if status is error.",
                 },
             },
             "required": ["action_type", "target"],
@@ -326,7 +418,15 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
             "properties": {
                 "task_id": {
                     "type": "string",
-                    "description": "Filter by task ID.",
+                    "description": "Filter by task or anchor ID.",
+                },
+                "anchor_id": {
+                    "type": "string",
+                    "description": "Filter by task anchor ID.",
+                },
+                "conversation_id": {
+                    "type": "string",
+                    "description": "Filter by conversation ID.",
                 },
                 "session_id": {
                     "type": "string",
@@ -617,12 +717,56 @@ class CortexMCPServer:
                 return {"found": False, "id": item_id, "message": "Record not found"}
             return {"archived": True, "record": archived}
 
+        elif name == "cortex_start_task":
+            task_label = args.get("task_label")
+            prompt = args.get("prompt")
+            conversation_id = args.get("conversation_id")
+            anchor_id = args.get("anchor_id")
+            metadata = args.get("metadata")
+            task = self.api.start_task(
+                task_label=task_label,
+                prompt=prompt,
+                conversation_id=conversation_id,
+                metadata=metadata,
+                source="mcp",
+                anchor_id=anchor_id,
+            )
+            return {"task": task, "status": "active"}
+
+        elif name == "cortex_end_task":
+            anchor_id = args.get("anchor_id")
+            if not anchor_id:
+                raise ValueError("Parameter 'anchor_id' is required for cortex_end_task.")
+            status = args.get("status", "completed")
+            metadata = args.get("metadata")
+            ended = self.api.end_task(anchor_id=anchor_id, status=status, metadata=metadata)
+            if not ended:
+                return {"found": False, "anchor_id": anchor_id, "message": "Task anchor not found"}
+            return {"task": ended, "status": "closed"}
+
+        elif name == "cortex_get_task":
+            anchor_id = args.get("anchor_id")
+            if not anchor_id:
+                raise ValueError("Parameter 'anchor_id' is required for cortex_get_task.")
+            task = self.api.get_task(anchor_id=anchor_id)
+            if not task:
+                return {"found": False, "anchor_id": anchor_id, "message": "Task anchor not found"}
+            return {"task": task, "found": True}
+
+        elif name == "cortex_list_tasks":
+            conversation_id = args.get("conversation_id")
+            status = args.get("status")
+            limit = int(args.get("limit", 50))
+            tasks = self.api.list_tasks(conversation_id=conversation_id, status=status, limit=limit)
+            return {"tasks": tasks, "count": len(tasks)}
+
         elif name == "cortex_record_activity":
             action_type = args.get("action_type")
             target = args.get("target")
             if not action_type or not target:
                 raise ValueError("Parameters 'action_type' and 'target' are required for cortex_record_activity.")
             status = args.get("status", "success")
+            anchor_id = args.get("anchor_id")
             task_id = args.get("task_id")
             session_id = args.get("session_id")
             duration_ms = float(args["duration_ms"]) if "duration_ms" in args and args["duration_ms"] is not None else None
@@ -632,6 +776,7 @@ class CortexMCPServer:
                 action_type=action_type,
                 target=target,
                 status=status,
+                anchor_id=anchor_id,
                 task_id=task_id,
                 session_id=session_id,
                 source="mcp",
@@ -643,12 +788,16 @@ class CortexMCPServer:
 
         elif name == "cortex_list_activity":
             task_id = args.get("task_id")
+            anchor_id = args.get("anchor_id")
+            conversation_id = args.get("conversation_id")
             session_id = args.get("session_id")
             action_type = args.get("action_type")
             status = args.get("status")
             limit = int(args.get("limit", 50))
             activities = self.api.list_activity(
                 task_id=task_id,
+                anchor_id=anchor_id,
+                conversation_id=conversation_id,
                 session_id=session_id,
                 action_type=action_type,
                 status=status,

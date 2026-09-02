@@ -159,6 +159,8 @@ class CortexCLI:
 
         return {
             "overall": overall_status,
+            "healthy": overall_status != "FAIL",
+            "version": __version__,
             "cortex_version": __version__,
             "retrieval_policy": "hybrid",
             "workspace": str(self.workspace_root),
@@ -166,11 +168,11 @@ class CortexCLI:
         }
 
     def cmd_init(self, force: bool = False) -> Dict[str, Any]:
-        """Safely initialize CORTEX storage and Antigravity plugin without overwriting existing user assets."""
-        # 1. Initialize canonical storage directories
+        """Safely initialize CORTEX storage and Antigravity plugin without polluting application docs or code."""
+        # 1. Initialize canonical storage directories (.cortex/)
         self.storage._ensure_directories()
 
-        # 2. Setup Antigravity plugin directories
+        # 2. Setup Antigravity plugin directories (.agents/plugins/cortex/)
         plugin_dir = self.workspace_root / ".agents" / "plugins" / "cortex"
         plugin_dir.mkdir(parents=True, exist_ok=True)
         (plugin_dir / "rules").mkdir(parents=True, exist_ok=True)
@@ -215,32 +217,58 @@ class CortexCLI:
             }
             mcp_file.write_text(json.dumps(mcp_data, indent=2), encoding="utf-8")
 
-        # 5. Create hooks.json if missing
+        # 5. Create hooks.json in plugin if missing
         hooks_file = plugin_dir / "hooks.json"
         if not hooks_file.exists() or force:
             hooks_data = {
                 "version": "1.0.0",
                 "hooks": {
-                    "on_session_start": {
-                        "description": "Verify CORTEX index readiness upon workspace session start",
-                        "action": "cortex doctor",
-                    }
+                    "PreToolUse": [
+                        {
+                            "command": "python -m cortex_engine.antigravity_hook --event pre",
+                            "name": "cortex-activity-pre-tool",
+                            "description": "Observes and records tool execution start in canonical activity log",
+                        }
+                    ],
+                    "PostToolUse": [
+                        {
+                            "command": "python -m cortex_engine.antigravity_hook --event post",
+                            "name": "cortex-activity-post-tool",
+                            "description": "Observes and records tool execution result in canonical activity log",
+                        }
+                    ],
                 },
             }
             hooks_file.write_text(json.dumps(hooks_data, indent=2), encoding="utf-8")
 
-        # 6. Create cortex-awareness rule if missing
+        # Ensure root .agents/hooks.json exists
+        root_agents_dir = self.workspace_root / ".agents"
+        root_agents_dir.mkdir(parents=True, exist_ok=True)
+        root_hooks_file = root_agents_dir / "hooks.json"
+        if not root_hooks_file.exists() or force:
+            root_hooks_file.write_text(json.dumps(hooks_data, indent=2), encoding="utf-8")
+
+        # 6. Create cortex-awareness rule if missing (with project authority boundary)
         rule_file = plugin_dir / "rules" / "cortex-awareness.md"
         if not rule_file.exists() or force:
             rule_content = """# CORTEX Awareness
 
 CORTEX is active in this workspace to provide persistent project memory, event tracking, and evidence retrieval.
 
+- **Workspace Authority**: CORTEX integration is infrastructure for the current project. The current application workspace remains authoritative for application source, documentation, tests, and reports.
+- **Documentation Boundary**: Never write application reports, design documents, or task summaries into CORTEX's internal directories. The application's `docs/` or reporting directories belong entirely to the consuming project.
 - **Agent Responsibility**: You (the Agent) remain fully responsible for reasoning, interpretation, planning, decisions, coding, and final judgment. CORTEX is your tool and evidence substrate, not an autonomous decision authority.
 - **Roles & Capabilities**: When helpful, you may transition roles (`APP`, `MEMORY`, `REVIEW`, `LEARNING`) using CORTEX skills and tools to query prior decisions, inspect lessons/constraints, verify claims, or record durable knowledge.
 - **Provenance**: Treat retrieved memory as contextual evidence to be verified, not unquestionable ground truth.
 """
             rule_file.write_text(rule_content, encoding="utf-8")
+
+        # Also place rule in .agents/rules/ if missing
+        root_rules_dir = root_agents_dir / "rules"
+        root_rules_dir.mkdir(parents=True, exist_ok=True)
+        root_rule_file = root_rules_dir / "cortex-awareness.md"
+        if not root_rule_file.exists() or force:
+            root_rule_file.write_text(rule_content, encoding="utf-8")
 
         # 7. Create skills directories and SKILL.md templates if missing
         skill_templates = {
@@ -341,9 +369,48 @@ Use cortex_record_knowledge and cortex_record_event to persist durable engineeri
         """Check duplicate or similar knowledge."""
         return self.api.check_duplicates(title=title, content=content, threshold=threshold)
 
+    def cmd_task_start(
+        self,
+        label: Optional[str] = None,
+        prompt: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        anchor_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Start a new engineering task boundary anchor."""
+        return self.api.start_task(
+            task_label=label,
+            prompt=prompt,
+            conversation_id=conversation_id,
+            workspace=str(self.workspace_root),
+            source="cli",
+            anchor_id=anchor_id,
+        )
+
+    def cmd_task_end(
+        self,
+        anchor_id: str,
+        status: str = "completed",
+    ) -> Optional[Dict[str, Any]]:
+        """End an active task boundary anchor."""
+        return self.api.end_task(anchor_id=anchor_id, status=status)
+
+    def cmd_task_list(
+        self,
+        conversation_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """List task boundary anchors."""
+        return self.api.list_tasks(conversation_id=conversation_id, status=status, limit=limit)
+
+    def cmd_task_get(self, anchor_id: str) -> Optional[Dict[str, Any]]:
+        """Get task boundary anchor by ID."""
+        return self.api.get_task(anchor_id=anchor_id)
+
     def cmd_activity(
         self,
         task_id: Optional[str] = None,
+        anchor_id: Optional[str] = None,
         session_id: Optional[str] = None,
         conversation_id: Optional[str] = None,
         step_index: Optional[int] = None,
@@ -355,6 +422,7 @@ Use cortex_record_knowledge and cortex_record_event to persist durable engineeri
         """List recent canonical activity events."""
         return self.api.list_activity(
             task_id=task_id,
+            anchor_id=anchor_id,
             session_id=session_id,
             conversation_id=conversation_id,
             step_index=step_index,
@@ -418,10 +486,33 @@ def main(args: Optional[List[str]] = None) -> int:
     dup_parser.add_argument("--content", type=str, required=True, help="Knowledge content")
     dup_parser.add_argument("--threshold", type=float, default=0.70, help="Similarity threshold")
 
+    # cortex task
+    task_parser = subparsers.add_parser("task", help="Manage engineering task boundary anchors")
+    task_sub = task_parser.add_subparsers(dest="task_action", help="Task operations")
+
+    t_start = task_sub.add_parser("start", help="Start a new task boundary anchor")
+    t_start.add_argument("--label", type=str, default=None, help="Short task label")
+    t_start.add_argument("--prompt", type=str, default=None, help="User prompt (hashed deterministically, not stored raw)")
+    t_start.add_argument("--conversation", type=str, default=None, help="Conversation ID")
+    t_start.add_argument("--id", type=str, default=None, help="Explicit task anchor ID")
+
+    t_end = task_sub.add_parser("end", help="End an active task boundary anchor")
+    t_end.add_argument("id", type=str, help="Task anchor ID to end")
+    t_end.add_argument("--status", type=str, default="completed", choices=["completed", "failed", "aborted"], help="Final task status")
+
+    t_list = task_sub.add_parser("list", help="List task boundary anchors")
+    t_list.add_argument("--conversation", type=str, default=None, help="Filter by conversation ID")
+    t_list.add_argument("--status", type=str, default=None, help="Filter by status")
+    t_list.add_argument("--limit", type=int, default=50, help="Max results")
+
+    t_get = task_sub.add_parser("get", help="Get task boundary anchor details")
+    t_get.add_argument("id", type=str, help="Task anchor ID")
+
     # cortex activity
     activity_parser = subparsers.add_parser("activity", help="Inspect canonical Agent activity log and trajectory")
     activity_parser.add_argument("--conversation", type=str, default=None, help="Filter by conversation ID")
-    activity_parser.add_argument("--task", type=str, default=None, help="Filter by task ID")
+    activity_parser.add_argument("--task", type=str, default=None, help="Filter by task or anchor ID")
+    activity_parser.add_argument("--anchor", type=str, default=None, help="Filter by task anchor ID")
     activity_parser.add_argument("--session", type=str, default=None, help="Filter by session ID")
     activity_parser.add_argument("--step", type=int, default=None, help="Filter by step index")
     activity_parser.add_argument("--type", type=str, default=None, help="Filter by action type (e.g. tool_call, tool_result, command_exec)")
@@ -432,32 +523,41 @@ def main(args: Optional[List[str]] = None) -> int:
 
     parsed = parser.parse_args(args)
 
-    cli = CortexCLI(workspace_root=parsed.workspace)
-
     if parsed.version:
-        print(cli.cmd_version())
+        print(f"CORTEX v{__version__} (schema v{__schema_version__})")
         return 0
+
+    if not parsed.command:
+        parser.print_help()
+        return 0
+
+    workspace = Path(parsed.workspace).resolve() if parsed.workspace else Path.cwd()
+    cli = CortexCLI(workspace_root=workspace)
 
     if parsed.command == "status":
         st = cli.cmd_status()
-        print(f"\n--- CORTEX Status (v{st['version']}) ---")
-        print(f"Workspace:          {st['workspace']}")
-        print(f"Initialized:        {st['cortex_initialized']}")
-        print(f"Total Records:      {st['total_records']} (Decisions: {st['record_counts']['decisions']}, Constraints: {st['record_counts']['constraints']}, Failures: {st['record_counts']['failures']}, Claims: {st['record_counts']['claims']})")
-        print(f"Index Status:       {st['index_status']}")
-        print(f"Last Event:         {st['last_event_timestamp'] or 'None'}")
-        print(f"Antigravity Plugin: {'Configured' if st['antigravity_plugin_configured'] else 'Not configured'}\n")
+        print("\n=== CORTEX Status ===")
+        print(f"Workspace: {st['workspace']}")
+        print(f"CORTEX Storage: {st['cortex_dir']} ({'Initialized' if st['initialized'] else 'Missing'})")
+        print(f"Active Knowledge: {st['total_knowledge']}")
+        for k, v in st['knowledge_by_type'].items():
+            print(f"  - {k.capitalize()}: {v}")
+        print(f"Total Observable Events: {st['total_events']}")
+        print(f"Total Activity Logs: {st['total_activity']}")
+        print(f"Plugin Status: {'Installed' if st['plugin_installed'] else 'Missing'}")
+        print()
         return 0
 
     elif parsed.command == "doctor":
         doc = cli.cmd_doctor()
-        print(f"\n=== CORTEX Doctor (v{doc['cortex_version']}) ===")
+        print(f"\n=== CORTEX Doctor (v{doc['version']}) ===")
         print(f"Workspace: {doc['workspace']}")
-        print(f"Overall Health: [{doc['overall']}]\n")
-        for chk in doc["checks"]:
-            print(f"  [{chk['status']:<4}] {chk['name']:<20} : {chk['detail']}")
+        print(f"Overall Health: [{'PASS' if doc['healthy'] else 'FAIL'}]\n")
+        for check in doc["checks"]:
+            stat = "PASS" if check["status"] == "ok" else ("WARN" if check["status"] == "warn" else "FAIL")
+            print(f"  [{stat:<4}] {check['name']:<22}: {check['detail']}")
         print()
-        return 0 if doc["overall"] != "FAIL" else 1
+        return 0 if doc["healthy"] else 1
 
     elif parsed.command == "init":
         res = cli.cmd_init(force=parsed.force)
@@ -466,17 +566,15 @@ def main(args: Optional[List[str]] = None) -> int:
 
     elif parsed.command == "search":
         res = cli.cmd_search(query=parsed.query, limit=parsed.limit)
-        print(f"\n--- Search Results for '{parsed.query}' ({len(res['results'])} matches) ---")
-        for r in res["results"]:
-            print(f"[{r['id']}] ({r.get('type', 'knowledge').upper()}) {r.get('title', '')}")
-            if "content" in r:
-                print(f"    {r['content']}")
-        print()
+        print(f"\n--- Search Results for '{parsed.query}' ({len(res.get('items', []))} matches via {res.get('policy', 'hybrid')}) ---")
+        for item in res.get("items", []):
+            print(f"[{item['id']}] ({item['type'].upper()}) Score: {item.get('score', 0):.2f} — {item['title']}")
+            print(f"  {item['content'][:120]}...\n")
         return 0
 
     elif parsed.command == "reindex":
         res = cli.cmd_reindex()
-        print(f"Reindexed {res.get('indexed_fts', 0)} FTS and {res.get('indexed_vector', 0)} Vector records successfully.")
+        print(f"Reindexed {res['indexed_fts']} FTS records and {res['indexed_vector']} vector records.")
         return 0
 
     elif parsed.command == "candidates":
@@ -518,9 +616,60 @@ def main(args: Optional[List[str]] = None) -> int:
         print()
         return 0
 
+    elif parsed.command == "task":
+        if parsed.task_action == "start":
+            t = cli.cmd_task_start(
+                label=parsed.label,
+                prompt=parsed.prompt,
+                conversation_id=parsed.conversation,
+                anchor_id=parsed.id,
+            )
+            print(f"Started task anchor [{t['anchor_id']}] (status: {t['status']})")
+            if t.get("prompt_hash"):
+                print(f"  Prompt Hash: {t['prompt_hash']}")
+            if t.get("task_label"):
+                print(f"  Label:       {t['task_label']}")
+            return 0
+
+        elif parsed.task_action == "end":
+            t = cli.cmd_task_end(anchor_id=parsed.id, status=parsed.status)
+            if t:
+                print(f"Closed task anchor [{t['anchor_id']}] (status: {t['status']})")
+            else:
+                print(f"Task anchor [{parsed.id}] not found.")
+            return 0
+
+        elif parsed.task_action == "list":
+            tasks = cli.cmd_task_list(conversation_id=parsed.conversation, status=parsed.status, limit=parsed.limit)
+            print(f"\n--- Task Boundary Anchors ({len(tasks)}) ---")
+            for t in tasks:
+                ended = f" -> {t['ended_at']}" if t.get("ended_at") else ""
+                label_str = f" — {t['task_label']}" if t.get("task_label") else ""
+                print(f"[{t['anchor_id']}] [{t['status'].upper()}] {t.get('created_at', '')}{ended}{label_str}")
+                if t.get("prompt_hash"):
+                    print(f"  prompt_hash: {t['prompt_hash']}")
+                if t.get("conversation_id"):
+                    print(f"  conversation: {t['conversation_id']}")
+            print()
+            return 0
+
+        elif parsed.task_action == "get":
+            t = cli.cmd_task_get(anchor_id=parsed.id)
+            if t:
+                print(json.dumps(t, indent=2, ensure_ascii=False))
+            else:
+                print(f"Task anchor [{parsed.id}] not found.")
+            return 0
+
+        else:
+            task_parser.print_help()
+            return 0
+
     elif parsed.command == "activity":
+        target_task = parsed.anchor or parsed.task
         acts = cli.cmd_activity(
-            task_id=parsed.task,
+            task_id=target_task,
+            anchor_id=target_task,
             session_id=parsed.session,
             conversation_id=parsed.conversation,
             step_index=parsed.step,
@@ -533,7 +682,13 @@ def main(args: Optional[List[str]] = None) -> int:
             print(json.dumps(acts, indent=2, ensure_ascii=False))
             return 0
 
-        header_suffix = f" for conversation '{parsed.conversation}'" if parsed.conversation else ""
+        filter_parts = []
+        if target_task:
+            filter_parts.append(f"task '{target_task}'")
+        if parsed.conversation:
+            filter_parts.append(f"conversation '{parsed.conversation}'")
+        header_suffix = f" for {', '.join(filter_parts)}" if filter_parts else ""
+
         print(f"\n--- Agent Action Observability Log ({len(acts)} events){header_suffix} ---")
         if not acts:
             print("No observable activity records found.")
@@ -543,7 +698,8 @@ def main(args: Optional[List[str]] = None) -> int:
             src = f"via {a.get('source', 'antigravity_hook')}"
             step_str = f"[step {a['step_index']}] " if a.get("step_index") is not None else ""
             tool_str = f"[{a['tool_name']}] " if a.get("tool_name") else ""
-            print(f"{a.get('timestamp', '')} {step_str}{stat:<9} {a.get('action_type', ''):<14} {src:<20} {tool_str}target: {a.get('target', '')}{dur}")
+            anc_str = f"[anchor {a['anchor_id']}] " if a.get("anchor_id") else ""
+            print(f"{a.get('timestamp', '')} {anc_str}{step_str}{stat:<9} {a.get('action_type', ''):<14} {src:<20} {tool_str}target: {a.get('target', '')}{dur}")
             if a.get("correlation_id"):
                 print(f"   corr: {a['correlation_id']}")
             if a.get("metadata"):

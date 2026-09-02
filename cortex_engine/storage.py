@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-from .models import ActivityEvent, Claim, Event, Knowledge
+from .models import ActivityEvent, Claim, Event, Knowledge, TaskAnchor, utc_now_iso
 from .redaction import redact_data
 
 
@@ -40,6 +40,7 @@ class CortexStorage:
         self.activity_file = self.events_dir / "activity.jsonl"
         self.knowledge_dir = self.cortex_dir / "knowledge"
         self.state_dir = self.cortex_dir / "state"
+        self.anchors_file = self.state_dir / "anchors.jsonl"
         self.indexes_dir = self.cortex_dir / "indexes"
         self.working_dir = self.cortex_dir / "working"
 
@@ -58,22 +59,25 @@ class CortexStorage:
     # Events Layer
     # -------------------------------------------------------------------------
 
-    def record_event(self, event: Event) -> str:
-        """Append an event to the events.jsonl log."""
+    def append_event(self, event: Event) -> str:
+        """Append an observable event to the canonical append-only events.jsonl log."""
         self._ensure_directories()
         line = json.dumps(event.to_dict(), ensure_ascii=False)
         with open(self.events_file, "a", encoding="utf-8") as f:
             f.write(line + "\n")
         return event.id
 
+    record_event = append_event
+
     def read_events(
         self,
         role: Optional[str] = None,
         event_type: Optional[str] = None,
         task_id: Optional[str] = None,
+        source: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> List[Event]:
-        """Read events from the events log with optional filtering."""
+        """Read events from the append-only events log with optional filtering."""
         if not self.events_file.exists():
             return []
 
@@ -92,6 +96,8 @@ class CortexStorage:
                         continue
                     if task_id and evt.task_id != task_id:
                         continue
+                    if source and evt.source != source:
+                        continue
                     events.append(evt)
                 except Exception:
                     continue
@@ -99,6 +105,132 @@ class CortexStorage:
         if limit is not None and limit > 0:
             return events[-limit:]
         return events
+
+    # -------------------------------------------------------------------------
+    # Task Anchor Layer
+    # -------------------------------------------------------------------------
+
+    def record_task_anchor(self, anchor: TaskAnchor) -> str:
+        """Append or update a task boundary anchor in state/anchors.jsonl."""
+        self._ensure_directories()
+        clean_anchor = TaskAnchor(
+            anchor_id=anchor.anchor_id,
+            conversation_id=anchor.conversation_id,
+            created_at=anchor.created_at,
+            ended_at=anchor.ended_at,
+            status=anchor.status,
+            workspace=str(anchor.workspace or ""),
+            source=anchor.source,
+            task_label=redact_data(anchor.task_label) if anchor.task_label else None,
+            prompt_hash=anchor.prompt_hash,
+            metadata=redact_data(anchor.metadata) if anchor.metadata else {},
+            schema_version=anchor.schema_version,
+        )
+        line = json.dumps(clean_anchor.to_dict(), ensure_ascii=False)
+        with open(self.anchors_file, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+        return clean_anchor.anchor_id
+
+    def get_task_anchor(self, anchor_id: str) -> Optional[TaskAnchor]:
+        """Retrieve the latest state of a specific task anchor by ID."""
+        if not self.anchors_file.exists():
+            return None
+
+        latest_anchor: Optional[TaskAnchor] = None
+        with open(self.anchors_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    if data.get("anchor_id") == anchor_id:
+                        latest_anchor = TaskAnchor.from_dict(data)
+                except Exception:
+                    continue
+        return latest_anchor
+
+    def get_active_task_anchor(
+        self,
+        conversation_id: Optional[str] = None,
+        workspace: Optional[str] = None,
+    ) -> Optional[TaskAnchor]:
+        """Retrieve the most recent active task anchor for a conversation or workspace."""
+        anchors = self.list_task_anchors(conversation_id=conversation_id, status="active")
+        if anchors:
+            return anchors[-1]
+        if conversation_id:
+            # Fallback to any active anchor if not found by exact conversation
+            all_active = self.list_task_anchors(status="active")
+            return all_active[-1] if all_active else None
+        return None
+
+    def list_task_anchors(
+        self,
+        conversation_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: Optional[int] = 50,
+    ) -> List[TaskAnchor]:
+        """List distinct task anchors resolving each anchor to its latest state."""
+        if not self.anchors_file.exists():
+            return []
+
+        anchors_map: dict[str, TaskAnchor] = {}
+        with open(self.anchors_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    anc = TaskAnchor.from_dict(data)
+                    anchors_map[anc.anchor_id] = anc
+                except Exception:
+                    continue
+
+        results: List[TaskAnchor] = []
+        for anc in anchors_map.values():
+            if conversation_id and anc.conversation_id != conversation_id:
+                continue
+            if status and anc.status != status:
+                continue
+            results.append(anc)
+
+        if limit is not None and limit > 0:
+            return results[-limit:]
+        return results
+
+    def update_task_anchor(
+        self,
+        anchor_id: str,
+        status: str = "completed",
+        ended_at: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> Optional[TaskAnchor]:
+        """Update status and end timestamp of a task anchor."""
+        existing = self.get_task_anchor(anchor_id)
+        if not existing:
+            return None
+
+        updated_meta = dict(existing.metadata)
+        if metadata:
+            updated_meta.update(metadata)
+
+        updated_anchor = TaskAnchor(
+            anchor_id=existing.anchor_id,
+            conversation_id=existing.conversation_id,
+            created_at=existing.created_at,
+            ended_at=ended_at or utc_now_iso(),
+            status=status,
+            workspace=existing.workspace,
+            source=existing.source,
+            task_label=existing.task_label,
+            prompt_hash=existing.prompt_hash,
+            metadata=updated_meta,
+            schema_version=existing.schema_version,
+        )
+        self.record_task_anchor(updated_anchor)
+        return updated_anchor
 
     # -------------------------------------------------------------------------
     # Activity Observability Layer
@@ -116,6 +248,7 @@ class CortexStorage:
         clean_activity = ActivityEvent(
             event_id=activity.event_id,
             timestamp=activity.timestamp,
+            anchor_id=activity.anchor_id,
             session_id=activity.session_id,
             task_id=activity.task_id,
             conversation_id=activity.conversation_id,
@@ -142,6 +275,7 @@ class CortexStorage:
     def read_activity(
         self,
         task_id: Optional[str] = None,
+        anchor_id: Optional[str] = None,
         session_id: Optional[str] = None,
         conversation_id: Optional[str] = None,
         step_index: Optional[int] = None,
@@ -158,6 +292,9 @@ class CortexStorage:
         if not self.activity_file.exists():
             return []
 
+        # task_id or anchor_id match interchangeably for backward compatibility
+        target_anchor = anchor_id or task_id
+
         activities: List[ActivityEvent] = []
         with open(self.activity_file, "r", encoding="utf-8") as f:
             for line in f:
@@ -167,7 +304,7 @@ class CortexStorage:
                 try:
                     data = json.loads(line)
                     act = ActivityEvent.from_dict(data)
-                    if task_id and act.task_id != task_id:
+                    if target_anchor and act.anchor_id != target_anchor and act.task_id != target_anchor:
                         continue
                     if session_id and act.session_id != session_id:
                         continue

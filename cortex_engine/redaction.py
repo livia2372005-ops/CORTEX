@@ -92,3 +92,22 @@ def redact_data(data: Any, max_depth: int = 10) -> Any:
     else:
         # For other objects, sanitize string representation
         return redact_text(str(data))
+
+
+def normalize_prompt(prompt: str) -> str:
+    """Deterministically normalize prompt text for fingerprint hashing."""
+    if not isinstance(prompt, str) or not prompt:
+        return ""
+    # Strip leading/trailing whitespace, collapse multiple spaces/newlines, lowercase
+    cleaned = " ".join(prompt.strip().split())
+    return cleaned.lower()
+
+
+def compute_prompt_hash(prompt: str) -> Optional[str]:
+    """Compute deterministic SHA-256 fingerprint of normalized prompt."""
+    if not isinstance(prompt, str) or not prompt.strip():
+        return None
+    import hashlib
+    norm = normalize_prompt(prompt)
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()
+

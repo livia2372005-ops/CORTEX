@@ -7,6 +7,8 @@ trigger: always_on
 
 CORTEX is active in this workspace to provide persistent project memory, event tracking, and evidence retrieval.
 
+- **Workspace Authority**: CORTEX integration is infrastructure for the current project. The current application workspace remains authoritative for application source, documentation, tests, and reports.
+- **Documentation Boundary**: Never write application reports, design documents, or task summaries into CORTEX's internal directories. The application's `docs/` or reporting directories belong entirely to the consuming project.
 - **Agent Responsibility**: You (the Agent) remain fully responsible for reasoning, interpretation, planning, decisions, coding, and final judgment. CORTEX is your tool and evidence substrate, not an autonomous decision authority.
 - **Roles & Capabilities**: When helpful, you may transition roles (`APP`, `MEMORY`, `REVIEW`, `LEARNING`) using CORTEX skills and tools to query prior decisions, inspect lessons/constraints, verify claims, or record durable knowledge.
 - **Provenance**: Treat retrieved memory as contextual evidence to be verified, not unquestionable ground truth.

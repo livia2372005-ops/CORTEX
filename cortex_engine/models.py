@@ -234,10 +234,46 @@ class RoleResult:
 
 
 @dataclass
+class TaskAnchor:
+    """Canonical representation of an explicit engineering task boundary."""
+    anchor_id: str
+    conversation_id: Optional[str] = None
+    created_at: str = field(default_factory=utc_now_iso)
+    ended_at: Optional[str] = None
+    status: str = "active"  # active, completed, failed, aborted
+    workspace: str = ""
+    source: str = "api"  # api, cli, mcp, hook, system
+    task_label: Optional[str] = None
+    prompt_hash: Optional[str] = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    schema_version: str = "1.0.0"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TaskAnchor:
+        return cls(
+            anchor_id=data["anchor_id"],
+            conversation_id=data.get("conversation_id"),
+            created_at=data.get("created_at", utc_now_iso()),
+            ended_at=data.get("ended_at"),
+            status=data.get("status", "active"),
+            workspace=data.get("workspace", ""),
+            source=data.get("source", "api"),
+            task_label=data.get("task_label"),
+            prompt_hash=data.get("prompt_hash"),
+            metadata=data.get("metadata", {}),
+            schema_version=data.get("schema_version", "1.0.0"),
+        )
+
+
+@dataclass
 class ActivityEvent:
     """Canonical schema for observable Agent activity and actions."""
     event_id: str
     timestamp: str = field(default_factory=utc_now_iso)
+    anchor_id: Optional[str] = None
     session_id: Optional[str] = None
     task_id: Optional[str] = None
     conversation_id: Optional[str] = None
@@ -263,6 +299,7 @@ class ActivityEvent:
         return cls(
             event_id=data["event_id"],
             timestamp=data.get("timestamp", utc_now_iso()),
+            anchor_id=data.get("anchor_id"),
             session_id=data.get("session_id"),
             task_id=data.get("task_id"),
             conversation_id=data.get("conversation_id"),
