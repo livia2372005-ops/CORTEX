@@ -231,3 +231,42 @@ class RoleResult:
             items=data.get("items", []),
             provenance=data.get("provenance", []),
         )
+
+
+@dataclass
+class ActivityEvent:
+    """Canonical schema for observable Agent activity and actions."""
+    event_id: str
+    timestamp: str = field(default_factory=utc_now_iso)
+    session_id: Optional[str] = None
+    task_id: Optional[str] = None
+    actor: str = "agent"  # agent, system, user
+    action_type: str = "tool_call"  # tool_call, tool_result, command_exec, file_read, file_write, file_delete, git_action, cortex_action, task_start, task_end, error
+    source: str = "mcp"  # mcp, cli, api, agent_hook
+    target: str = ""  # resource or target e.g. "cortex_search", "src/auth.py", "git commit"
+    status: str = "success"  # success, error, pending, interrupted
+    duration_ms: Optional[float] = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    error_type: Optional[str] = None
+    schema_version: str = "1.0.0"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ActivityEvent:
+        return cls(
+            event_id=data["event_id"],
+            timestamp=data.get("timestamp", utc_now_iso()),
+            session_id=data.get("session_id"),
+            task_id=data.get("task_id"),
+            actor=data.get("actor", "agent"),
+            action_type=data.get("action_type", "tool_call"),
+            source=data.get("source", "mcp"),
+            target=data.get("target", ""),
+            status=data.get("status", "success"),
+            duration_ms=data.get("duration_ms"),
+            metadata=data.get("metadata", {}),
+            error_type=data.get("error_type"),
+            schema_version=data.get("schema_version", "1.0.0"),
+        )

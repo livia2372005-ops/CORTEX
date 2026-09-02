@@ -10,6 +10,7 @@ from .hybrid_router import HybridRetrievalRouter, RouterPolicy
 from .indexer import CortexIndexer
 from .lifecycle import MemoryLifecycleManager
 from .models import (
+    ActivityEvent,
     Claim,
     ContextPackage,
     Event,
@@ -526,3 +527,69 @@ class CortexAPI:
         """Logically archive a persistent knowledge record without deleting history."""
         archived = self.lifecycle.archive_knowledge(knowledge_id=knowledge_id, reason=reason)
         return archived.to_dict() if archived else None
+
+    # -------------------------------------------------------------------------
+    # Activity Observability API
+    # -------------------------------------------------------------------------
+
+    def record_activity(
+        self,
+        action_type: str,
+        target: str,
+        status: str = "success",
+        session_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        actor: str = "agent",
+        source: str = "api",
+        duration_ms: Optional[float] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        error_type: Optional[str] = None,
+        id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Explicitly record an observable action or event in the canonical activity log."""
+        event_id = id or f"act-{uuid.uuid4().hex[:10]}"
+        act_event = ActivityEvent(
+            event_id=event_id,
+            timestamp=utc_now_iso(),
+            session_id=session_id,
+            task_id=task_id,
+            actor=actor,
+            action_type=action_type,
+            source=source,
+            target=target,
+            status=status,
+            duration_ms=duration_ms,
+            metadata=metadata or {},
+            error_type=error_type,
+        )
+        self.storage.record_activity(act_event)
+        return act_event.to_dict()
+
+    def list_activity(
+        self,
+        task_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        action_type: Optional[str] = None,
+        status: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        limit: Optional[int] = 50,
+        offset: int = 0,
+    ) -> List[dict[str, Any]]:
+        """Query observable activity events from canonical storage with filtering."""
+        events = self.storage.read_activity(
+            task_id=task_id,
+            session_id=session_id,
+            action_type=action_type,
+            status=status,
+            start_time=start_time,
+            end_time=end_time,
+            limit=limit,
+            offset=offset,
+        )
+        return [e.to_dict() for e in events]
+
+    def get_activity(self, event_id: str) -> Optional[dict[str, Any]]:
+        """Retrieve a specific activity event by its unique event_id."""
+        act = self.storage.get_activity(event_id)
+        return act.to_dict() if act else None

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -274,6 +275,79 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
             "required": ["id"],
         },
     },
+    {
+        "name": "cortex_record_activity",
+        "description": "Record an observable Agent action, command execution, tool result, or file operation to the canonical activity log.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action_type": {
+                    "type": "string",
+                    "description": "Category of action: 'tool_call', 'tool_result', 'command_exec', 'file_read', 'file_write', 'file_delete', 'git_action', 'cortex_action', 'task_start', 'task_end', 'error'.",
+                },
+                "target": {
+                    "type": "string",
+                    "description": "Action resource or target (e.g., 'pytest tests/', 'src/auth.py', 'git commit').",
+                },
+                "status": {
+                    "type": "string",
+                    "description": "Status of the action: 'success' (default), 'error', 'pending', 'interrupted'.",
+                    "default": "success",
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "Optional associated task ID.",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Optional session ID.",
+                },
+                "duration_ms": {
+                    "type": "number",
+                    "description": "Optional duration in milliseconds.",
+                },
+                "metadata": {
+                    "type": "object",
+                    "description": "Sanitized metadata describing the operation (e.g. exit code, byte count).",
+                },
+                "error_type": {
+                    "type": "string",
+                    "description": "Optional sanitized error category.",
+                },
+            },
+            "required": ["action_type", "target"],
+        },
+    },
+    {
+        "name": "cortex_list_activity",
+        "description": "Query the canonical activity log to inspect real Agent actions and timeline.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Filter by task ID.",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Filter by session ID.",
+                },
+                "action_type": {
+                    "type": "string",
+                    "description": "Filter by action type (e.g., 'tool_call', 'command_exec').",
+                },
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status ('success', 'error').",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of activity events to return (default: 50).",
+                    "default": 50,
+                },
+            },
+        },
+    },
 ]
 
 
@@ -333,8 +407,23 @@ class CortexMCPServer:
         if method == "tools/call":
             tool_name = params.get("name")
             args = params.get("arguments", {})
+            start_t = time.perf_counter()
             try:
                 result_data = self._execute_tool(tool_name, args)
+                duration_ms = round((time.perf_counter() - start_t) * 1000.0, 2)
+                # Automatically record observable MCP tool invocation (skip list_activity to avoid noise)
+                if tool_name != "cortex_list_activity":
+                    try:
+                        self.api.record_activity(
+                            action_type="tool_call",
+                            target=str(tool_name),
+                            source="mcp",
+                            status="success",
+                            duration_ms=duration_ms,
+                            metadata={"args_keys": list(args.keys())},
+                        )
+                    except Exception:
+                        pass
                 return {
                     "jsonrpc": "2.0",
                     "id": req_id,
@@ -349,12 +438,38 @@ class CortexMCPServer:
                     },
                 }
             except ValueError as ve:
+                duration_ms = round((time.perf_counter() - start_t) * 1000.0, 2)
+                try:
+                    self.api.record_activity(
+                        action_type="tool_call",
+                        target=str(tool_name),
+                        source="mcp",
+                        status="error",
+                        duration_ms=duration_ms,
+                        error_type="ValueError",
+                        metadata={"error": str(ve)},
+                    )
+                except Exception:
+                    pass
                 return {
                     "jsonrpc": "2.0",
                     "id": req_id,
                     "error": {"code": -32602, "message": str(ve)},
                 }
             except Exception as e:
+                duration_ms = round((time.perf_counter() - start_t) * 1000.0, 2)
+                try:
+                    self.api.record_activity(
+                        action_type="tool_call",
+                        target=str(tool_name),
+                        source="mcp",
+                        status="error",
+                        duration_ms=duration_ms,
+                        error_type=type(e).__name__,
+                        metadata={"error": str(e)},
+                    )
+                except Exception:
+                    pass
                 return {
                     "jsonrpc": "2.0",
                     "id": req_id,
@@ -501,6 +616,45 @@ class CortexMCPServer:
             if archived is None:
                 return {"found": False, "id": item_id, "message": "Record not found"}
             return {"archived": True, "record": archived}
+
+        elif name == "cortex_record_activity":
+            action_type = args.get("action_type")
+            target = args.get("target")
+            if not action_type or not target:
+                raise ValueError("Parameters 'action_type' and 'target' are required for cortex_record_activity.")
+            status = args.get("status", "success")
+            task_id = args.get("task_id")
+            session_id = args.get("session_id")
+            duration_ms = float(args["duration_ms"]) if "duration_ms" in args and args["duration_ms"] is not None else None
+            metadata = args.get("metadata")
+            error_type = args.get("error_type")
+            recorded = self.api.record_activity(
+                action_type=action_type,
+                target=target,
+                status=status,
+                task_id=task_id,
+                session_id=session_id,
+                source="mcp",
+                duration_ms=duration_ms,
+                metadata=metadata,
+                error_type=error_type,
+            )
+            return {"recorded_id": recorded["event_id"], "status": "persisted"}
+
+        elif name == "cortex_list_activity":
+            task_id = args.get("task_id")
+            session_id = args.get("session_id")
+            action_type = args.get("action_type")
+            status = args.get("status")
+            limit = int(args.get("limit", 50))
+            activities = self.api.list_activity(
+                task_id=task_id,
+                session_id=session_id,
+                action_type=action_type,
+                status=status,
+                limit=limit,
+            )
+            return {"activities": activities, "count": len(activities)}
 
         else:
             raise ValueError(f"Unknown tool name: {name}")

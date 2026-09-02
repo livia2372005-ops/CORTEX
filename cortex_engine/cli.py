@@ -341,6 +341,23 @@ Use cortex_record_knowledge and cortex_record_event to persist durable engineeri
         """Check duplicate or similar knowledge."""
         return self.api.check_duplicates(title=title, content=content, threshold=threshold)
 
+    def cmd_activity(
+        self,
+        task_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        action_type: Optional[str] = None,
+        status: Optional[str] = None,
+        last: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """List recent canonical activity events."""
+        return self.api.list_activity(
+            task_id=task_id,
+            session_id=session_id,
+            action_type=action_type,
+            status=status,
+            limit=last,
+        )
+
 
 def main(args: Optional[List[str]] = None) -> int:
     """Entry point for CORTEX CLI commands."""
@@ -394,6 +411,15 @@ def main(args: Optional[List[str]] = None) -> int:
     dup_parser.add_argument("--title", type=str, required=True, help="Knowledge title")
     dup_parser.add_argument("--content", type=str, required=True, help="Knowledge content")
     dup_parser.add_argument("--threshold", type=float, default=0.70, help="Similarity threshold")
+
+    # cortex activity
+    activity_parser = subparsers.add_parser("activity", help="Inspect canonical Agent activity log")
+    activity_parser.add_argument("--task", type=str, default=None, help="Filter by task ID")
+    activity_parser.add_argument("--session", type=str, default=None, help="Filter by session ID")
+    activity_parser.add_argument("--type", type=str, default=None, help="Filter by action type (e.g. tool_call, command_exec)")
+    activity_parser.add_argument("--status", type=str, default=None, help="Filter by status (success, error)")
+    activity_parser.add_argument("--last", type=int, default=20, help="Number of recent activities to show (default: 20)")
+    activity_parser.add_argument("--json", action="store_true", help="Output raw JSON format")
 
     parsed = parser.parse_args(args)
 
@@ -480,6 +506,33 @@ def main(args: Optional[List[str]] = None) -> int:
         print(f"\n--- Duplicate / Similar Knowledge Records ({len(dups)}) ---")
         for d in dups:
             print(f"[{d['id']}] ({d['type'].upper()}) Similarity: {d['similarity']:.2f} — {d['title']}")
+        print()
+        return 0
+
+    elif parsed.command == "activity":
+        acts = cli.cmd_activity(
+            task_id=parsed.task,
+            session_id=parsed.session,
+            action_type=parsed.type,
+            status=parsed.status,
+            last=parsed.last,
+        )
+        if parsed.json:
+            print(json.dumps(acts, indent=2, ensure_ascii=False))
+            return 0
+
+        print(f"\n--- Recent Agent Activity ({len(acts)} events) ---")
+        if not acts:
+            print("No observable activity records found.")
+        for a in acts:
+            dur = f" ({a['duration_ms']}ms)" if a.get("duration_ms") is not None else ""
+            stat = f"[{a.get('status', 'success').upper()}]"
+            src = f"via {a.get('source', 'mcp')}"
+            print(f"{a.get('timestamp', '')} {stat:<9} {a.get('action_type', ''):<14} {src:<8} target: {a.get('target', '')}{dur}")
+            if a.get("metadata"):
+                print(f"   meta: {json.dumps(a['metadata'], ensure_ascii=False)}")
+            if a.get("error_type"):
+                print(f"   error: {a['error_type']}")
         print()
         return 0
 

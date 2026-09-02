@@ -7,7 +7,8 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-from .models import Claim, Event, Knowledge
+from .models import ActivityEvent, Claim, Event, Knowledge
+from .redaction import redact_data
 
 
 CATEGORY_MAP = {
@@ -36,6 +37,7 @@ class CortexStorage:
 
         self.events_dir = self.cortex_dir / "events"
         self.events_file = self.events_dir / "events.jsonl"
+        self.activity_file = self.events_dir / "activity.jsonl"
         self.knowledge_dir = self.cortex_dir / "knowledge"
         self.state_dir = self.cortex_dir / "state"
         self.indexes_dir = self.cortex_dir / "indexes"
@@ -97,6 +99,103 @@ class CortexStorage:
         if limit is not None and limit > 0:
             return events[-limit:]
         return events
+
+    # -------------------------------------------------------------------------
+    # Activity Observability Layer
+    # -------------------------------------------------------------------------
+
+    def record_activity(self, activity: ActivityEvent) -> str:
+        """Append an activity event to the canonical append-only activity.jsonl log with automatic sanitization."""
+        self._ensure_directories()
+        # Sanitize metadata, target, and error info
+        sanitized_metadata = redact_data(activity.metadata) if activity.metadata else {}
+        sanitized_target = redact_data(activity.target) if activity.target else ""
+        sanitized_error = redact_data(activity.error_type) if activity.error_type else None
+
+        clean_activity = ActivityEvent(
+            event_id=activity.event_id,
+            timestamp=activity.timestamp,
+            session_id=activity.session_id,
+            task_id=activity.task_id,
+            actor=activity.actor,
+            action_type=activity.action_type,
+            source=activity.source,
+            target=sanitized_target,
+            status=activity.status,
+            duration_ms=activity.duration_ms,
+            metadata=sanitized_metadata,
+            error_type=sanitized_error,
+            schema_version=activity.schema_version,
+        )
+
+        line = json.dumps(clean_activity.to_dict(), ensure_ascii=False)
+        with open(self.activity_file, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+        return clean_activity.event_id
+
+    def read_activity(
+        self,
+        task_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        action_type: Optional[str] = None,
+        status: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> List[ActivityEvent]:
+        """Read activity events from the canonical activity log with filtering."""
+        if not self.activity_file.exists():
+            return []
+
+        activities: List[ActivityEvent] = []
+        with open(self.activity_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    act = ActivityEvent.from_dict(data)
+                    if task_id and act.task_id != task_id:
+                        continue
+                    if session_id and act.session_id != session_id:
+                        continue
+                    if action_type and act.action_type != action_type:
+                        continue
+                    if status and act.status != status:
+                        continue
+                    if start_time and act.timestamp < start_time:
+                        continue
+                    if end_time and act.timestamp > end_time:
+                        continue
+                    activities.append(act)
+                except Exception:
+                    continue
+
+        if offset > 0:
+            activities = activities[offset:]
+        if limit is not None and limit > 0:
+            return activities[:limit] if offset > 0 else activities[-limit:]
+        return activities
+
+    def get_activity(self, event_id: str) -> Optional[ActivityEvent]:
+        """Retrieve a specific activity event by its event_id."""
+        if not self.activity_file.exists():
+            return None
+
+        with open(self.activity_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    if data.get("event_id") == event_id:
+                        return ActivityEvent.from_dict(data)
+                except Exception:
+                    continue
+        return None
 
     # -------------------------------------------------------------------------
     # Knowledge Layer
