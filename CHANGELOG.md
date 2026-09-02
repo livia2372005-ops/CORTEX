@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.0] — 2026-09-02
+
+### Added
+- **Clean Runtime Packaging**: Strict separation between the CORTEX developer repository and consuming workspace runtime integration. `cortex init` provisions only `.cortex/`, `.agents/plugins/cortex/`, and root `CORTEX_USAGE.md` without polluting application `docs/` or creating `docs/reports/`.
+- **Root Agent Entry Point (`CORTEX_USAGE.md`)**: Single, canonical 102-line root-level guide teaching coding Agents the core mental model, decision policy, memory workflow, and workspace authority boundary immediately upon workspace entry.
+- **TaskAnchor / Task Boundary Observability**: First-class `TaskAnchor` entity and lifecycle APIs (`start_task`, `end_task`, CLI `cortex task`, MCP `cortex_start_task` / `cortex_end_task`) associating multi-step tool execution trajectories with distinct engineering tasks.
+- **Deterministic Prompt Fingerprinting**: Deterministic SHA-256 fingerprinting (`prompt_hash`) for explicitly supplied task prompts without persisting raw user prompts by default or parsing conversation transcripts.
+- **General Agent Usage Protocol (`cortex-usage`)**: Standardized Agent skill ([`.agents/skills/cortex-usage/SKILL.md`](.agents/skills/cortex-usage/SKILL.md)) establishing the decision policy ("when to use vs when not to use CORTEX"), the `Retrieved vs Applied vs Not Applied` distinction, and graceful degradation rules.
+- **Workspace Authority Boundary Invariants**: Injected awareness rules explicitly declare that the consuming workspace owns its application source, tests, documentation, and reports.
+
+### Security & Privacy Invariants
+- **Zero Raw Prompt / Reasoning Storage**: Raw user prompts and private deliberations (chain-of-thought) are strictly excluded from memory persistence.
+- **No Transcript Scraping**: Tool execution observability relies on structured native hooks without reading or scraping conversation transcripts.
+
+---
+
 ## [0.2.0] — 2026-09-02
 
 ### Added

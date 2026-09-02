@@ -104,6 +104,7 @@ CORTEX features a dedicated **Context Compiler Layer** that transforms retrieved
 
 ## 7. Documentation Index
 
+- [CORTEX Usage Guide (Agent Entry Point)](CORTEX_USAGE.md) — Canonical usage contract and decision protocol
 - [CORTEX Doctrine](docs/CORTEX_DOCTRINE.md) — Core architectural and agency principles
 - [Architecture Overview](docs/architecture.md) — Dual-layer storage and indexing design
 - [Installation Guide](docs/installation.md) — Setup and Antigravity configuration
@@ -111,5 +112,6 @@ CORTEX features a dedicated **Context Compiler Layer** that transforms retrieved
 - [Canonical Memory Model](docs/memory-model.md) — Knowledge schemas and status lifecycles
 - [Troubleshooting & Doctor](docs/troubleshooting.md) — Diagnostic and repair procedures
 - [Changelog](CHANGELOG.md) — Release notes and version history
+- [v0.3.0 Release Verification Report](docs/reports/RELEASE-v0.3.0-VERIFICATION.md) — Release audit and clean verification
 - [v0.2.0 Release Report](docs/reports/RELEASE-v0.2.0.md) — Release audit and benchmark evidence
 - [v0.1.0 Release Report](docs/reports/RELEASE-0.1.0.md) — Release audit and benchmark evidence

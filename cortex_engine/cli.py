@@ -695,7 +695,7 @@ def main(args: Optional[List[str]] = None) -> int:
         print(f"Workspace: {doc['workspace']}")
         print(f"Overall Health: [{'PASS' if doc['healthy'] else 'FAIL'}]\n")
         for check in doc["checks"]:
-            stat = "PASS" if check["status"] == "ok" else ("WARN" if check["status"] == "warn" else "FAIL")
+            stat = "PASS" if check["status"] in ("ok", "PASS") else ("WARN" if check["status"] in ("warn", "WARN") else "FAIL")
             print(f"  [{stat:<4}] {check['name']:<22}: {check['detail']}")
         print()
         return 0 if doc["healthy"] else 1

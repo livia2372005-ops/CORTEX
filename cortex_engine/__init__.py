@@ -1,6 +1,6 @@
 """CORTEX: Persistent project memory and evidence retrieval engine for coding Agents."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __schema_version__ = "1.0.0"
 
 from .api import CortexAPI
