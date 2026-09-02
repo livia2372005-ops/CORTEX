@@ -111,18 +111,24 @@ class CortexStorage:
         sanitized_metadata = redact_data(activity.metadata) if activity.metadata else {}
         sanitized_target = redact_data(activity.target) if activity.target else ""
         sanitized_error = redact_data(activity.error_type) if activity.error_type else None
+        sanitized_tool = redact_data(activity.tool_name) if activity.tool_name else None
 
         clean_activity = ActivityEvent(
             event_id=activity.event_id,
             timestamp=activity.timestamp,
             session_id=activity.session_id,
             task_id=activity.task_id,
+            conversation_id=activity.conversation_id,
+            step_index=activity.step_index,
             actor=activity.actor,
             action_type=activity.action_type,
             source=activity.source,
             target=sanitized_target,
+            tool_name=sanitized_tool,
             status=activity.status,
             duration_ms=activity.duration_ms,
+            parent_event_id=activity.parent_event_id,
+            correlation_id=activity.correlation_id,
             metadata=sanitized_metadata,
             error_type=sanitized_error,
             schema_version=activity.schema_version,
@@ -137,7 +143,11 @@ class CortexStorage:
         self,
         task_id: Optional[str] = None,
         session_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        step_index: Optional[int] = None,
+        tool_name: Optional[str] = None,
         action_type: Optional[str] = None,
+        source: Optional[str] = None,
         status: Optional[str] = None,
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
@@ -161,7 +171,15 @@ class CortexStorage:
                         continue
                     if session_id and act.session_id != session_id:
                         continue
+                    if conversation_id and act.conversation_id != conversation_id:
+                        continue
+                    if step_index is not None and act.step_index != step_index:
+                        continue
+                    if tool_name and act.tool_name != tool_name:
+                        continue
                     if action_type and act.action_type != action_type:
+                        continue
+                    if source and act.source != source:
                         continue
                     if status and act.status != status:
                         continue

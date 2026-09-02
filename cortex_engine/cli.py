@@ -345,15 +345,21 @@ Use cortex_record_knowledge and cortex_record_event to persist durable engineeri
         self,
         task_id: Optional[str] = None,
         session_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        step_index: Optional[int] = None,
         action_type: Optional[str] = None,
+        source: Optional[str] = None,
         status: Optional[str] = None,
-        last: int = 20,
+        last: int = 50,
     ) -> List[Dict[str, Any]]:
         """List recent canonical activity events."""
         return self.api.list_activity(
             task_id=task_id,
             session_id=session_id,
+            conversation_id=conversation_id,
+            step_index=step_index,
             action_type=action_type,
+            source=source,
             status=status,
             limit=last,
         )
@@ -413,12 +419,15 @@ def main(args: Optional[List[str]] = None) -> int:
     dup_parser.add_argument("--threshold", type=float, default=0.70, help="Similarity threshold")
 
     # cortex activity
-    activity_parser = subparsers.add_parser("activity", help="Inspect canonical Agent activity log")
+    activity_parser = subparsers.add_parser("activity", help="Inspect canonical Agent activity log and trajectory")
+    activity_parser.add_argument("--conversation", type=str, default=None, help="Filter by conversation ID")
     activity_parser.add_argument("--task", type=str, default=None, help="Filter by task ID")
     activity_parser.add_argument("--session", type=str, default=None, help="Filter by session ID")
-    activity_parser.add_argument("--type", type=str, default=None, help="Filter by action type (e.g. tool_call, command_exec)")
-    activity_parser.add_argument("--status", type=str, default=None, help="Filter by status (success, error)")
-    activity_parser.add_argument("--last", type=int, default=20, help="Number of recent activities to show (default: 20)")
+    activity_parser.add_argument("--step", type=int, default=None, help="Filter by step index")
+    activity_parser.add_argument("--type", type=str, default=None, help="Filter by action type (e.g. tool_call, tool_result, command_exec)")
+    activity_parser.add_argument("--source", type=str, default=None, help="Filter by source (e.g. antigravity_hook, mcp, python_api)")
+    activity_parser.add_argument("--status", type=str, default=None, help="Filter by status (success, error, started)")
+    activity_parser.add_argument("--last", type=int, default=50, help="Number of recent activities to show (default: 50)")
     activity_parser.add_argument("--json", action="store_true", help="Output raw JSON format")
 
     parsed = parser.parse_args(args)
@@ -513,7 +522,10 @@ def main(args: Optional[List[str]] = None) -> int:
         acts = cli.cmd_activity(
             task_id=parsed.task,
             session_id=parsed.session,
+            conversation_id=parsed.conversation,
+            step_index=parsed.step,
             action_type=parsed.type,
+            source=parsed.source,
             status=parsed.status,
             last=parsed.last,
         )
@@ -521,14 +533,19 @@ def main(args: Optional[List[str]] = None) -> int:
             print(json.dumps(acts, indent=2, ensure_ascii=False))
             return 0
 
-        print(f"\n--- Recent Agent Activity ({len(acts)} events) ---")
+        header_suffix = f" for conversation '{parsed.conversation}'" if parsed.conversation else ""
+        print(f"\n--- Agent Action Observability Log ({len(acts)} events){header_suffix} ---")
         if not acts:
             print("No observable activity records found.")
         for a in acts:
             dur = f" ({a['duration_ms']}ms)" if a.get("duration_ms") is not None else ""
             stat = f"[{a.get('status', 'success').upper()}]"
-            src = f"via {a.get('source', 'mcp')}"
-            print(f"{a.get('timestamp', '')} {stat:<9} {a.get('action_type', ''):<14} {src:<8} target: {a.get('target', '')}{dur}")
+            src = f"via {a.get('source', 'antigravity_hook')}"
+            step_str = f"[step {a['step_index']}] " if a.get("step_index") is not None else ""
+            tool_str = f"[{a['tool_name']}] " if a.get("tool_name") else ""
+            print(f"{a.get('timestamp', '')} {step_str}{stat:<9} {a.get('action_type', ''):<14} {src:<20} {tool_str}target: {a.get('target', '')}{dur}")
+            if a.get("correlation_id"):
+                print(f"   corr: {a['correlation_id']}")
             if a.get("metadata"):
                 print(f"   meta: {json.dumps(a['metadata'], ensure_ascii=False)}")
             if a.get("error_type"):

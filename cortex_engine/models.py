@@ -240,12 +240,17 @@ class ActivityEvent:
     timestamp: str = field(default_factory=utc_now_iso)
     session_id: Optional[str] = None
     task_id: Optional[str] = None
+    conversation_id: Optional[str] = None
+    step_index: Optional[int] = None
     actor: str = "agent"  # agent, system, user
     action_type: str = "tool_call"  # tool_call, tool_result, command_exec, file_read, file_write, file_delete, git_action, cortex_action, task_start, task_end, error
-    source: str = "mcp"  # mcp, cli, api, agent_hook
+    source: str = "antigravity_hook"  # antigravity_hook, mcp, cli, python_api, system
     target: str = ""  # resource or target e.g. "cortex_search", "src/auth.py", "git commit"
-    status: str = "success"  # success, error, pending, interrupted
+    tool_name: Optional[str] = None
+    status: str = "success"  # success, error, pending, started, interrupted
     duration_ms: Optional[float] = None
+    parent_event_id: Optional[str] = None
+    correlation_id: Optional[str] = None
     metadata: dict[str, Any] = field(default_factory=dict)
     error_type: Optional[str] = None
     schema_version: str = "1.0.0"
@@ -260,12 +265,17 @@ class ActivityEvent:
             timestamp=data.get("timestamp", utc_now_iso()),
             session_id=data.get("session_id"),
             task_id=data.get("task_id"),
+            conversation_id=data.get("conversation_id"),
+            step_index=data.get("step_index"),
             actor=data.get("actor", "agent"),
             action_type=data.get("action_type", "tool_call"),
             source=data.get("source", "mcp"),
             target=data.get("target", ""),
+            tool_name=data.get("tool_name"),
             status=data.get("status", "success"),
             duration_ms=data.get("duration_ms"),
+            parent_event_id=data.get("parent_event_id"),
+            correlation_id=data.get("correlation_id"),
             metadata=data.get("metadata", {}),
             error_type=data.get("error_type"),
             schema_version=data.get("schema_version", "1.0.0"),
