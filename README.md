@@ -46,6 +46,10 @@ python -m cortex_engine.cli doctor
 
 # Inspect memory record counts and configuration
 python -m cortex_engine.cli status
+
+# Inspect agent activity log and trajectory
+python -m cortex_engine.cli activity
+python -m cortex_engine.cli activity --conversation <id>
 ```
 
 ### Antigravity Integration
@@ -53,6 +57,7 @@ python -m cortex_engine.cli status
 CORTEX integrates natively as an Antigravity workspace plugin at `.agents/plugins/cortex/`:
 - **Awareness Rule**: `.agents/plugins/cortex/rules/cortex-awareness.md`
 - **Agent Skills**: `cortex-memory`, `cortex-review`, `cortex-learning`
+- **Lifecycle Hooks**: `hooks.json` capturing `PreToolUse` and `PostToolUse` activity events
 - **MCP Server**: Fast JSON-RPC 2.0 stdio server (`python -m cortex_engine.mcp_server`)
 
 ---
@@ -71,6 +76,8 @@ CORTEX integrates natively as an Antigravity workspace plugin at `.agents/plugin
 | `cortex_check_duplicates` | Non-destructively identifies conceptual duplicates |
 | `cortex_archive_memory` | Logically archives retired knowledge records |
 | `cortex_check_claim_freshness`| Verifies bound code artifact SHA-256 hashes against disk |
+| `cortex_record_activity` | Explicitly logs observable actions to the canonical activity stream |
+| `cortex_list_activity` | Queries recent activity events with filtering |
 | `cortex_status` / `cortex_doctor` | Workspace diagnostics and health checks |
 
 ---
@@ -91,6 +98,7 @@ CORTEX features a dedicated **Context Compiler Layer** that transforms retrieved
 
 - **Lexical Pattern Clustering**: Failure clustering operates on lexical token overlap with stopword filtering; highly dynamic stack traces with randomized variable names may produce multiple candidate proposals.
 - **Local Embedding Scale**: The embedded dense n-gram vector engine is tailored for local zero-dependency workspaces (< 10,000 records) rather than massive hosted enterprise clusters.
+- **Observability Scope**: Observes tool executions through configured Antigravity hooks and MCP calls; does not monitor uninstrumented external OS processes outside the workspace.
 
 ---
 
@@ -103,4 +111,5 @@ CORTEX features a dedicated **Context Compiler Layer** that transforms retrieved
 - [Canonical Memory Model](docs/memory-model.md) — Knowledge schemas and status lifecycles
 - [Troubleshooting & Doctor](docs/troubleshooting.md) — Diagnostic and repair procedures
 - [Changelog](CHANGELOG.md) — Release notes and version history
+- [v0.2.0 Release Report](docs/reports/RELEASE-v0.2.0.md) — Release audit and benchmark evidence
 - [v0.1.0 Release Report](docs/reports/RELEASE-0.1.0.md) — Release audit and benchmark evidence

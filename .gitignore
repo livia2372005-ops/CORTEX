@@ -37,7 +37,8 @@ ENV/
 .coverage
 htmlcov/
 
-# CORTEX Derived & Ephemeral Data (reproducible via cortex reindex)
+# CORTEX Derived, Runtime & Ephemeral Data (reproducible via cortex reindex)
+.cortex/events/*.jsonl
 .cortex/index/
 .cortex/indexes/
 .cortex/working/
@@ -45,6 +46,7 @@ htmlcov/
 *.sqlite
 *.sqlite3
 vector_dense.json
+scratch/
 
 # IDEs & OS
 .idea/

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0] — 2026-09-02
+
+### Added
+- **Native Antigravity Agent Observability**: Automated, non-intrusive action observability for Antigravity coding agents via native `PreToolUse` and `PostToolUse` lifecycle hooks (`.agents/plugins/cortex/hooks.json` and `cortex_engine.antigravity_hook`).
+- **Canonical Activity Log (`.cortex/events/activity.jsonl`)**: Append-only activity log capturing observable tool calls, results, status, durations, error traces, and targets without recording private chain-of-thought or internal prompts.
+- **Trajectory Reconstruction & Correlation**: Multi-step action trajectory linking using deterministic `correlation_id` (`step-{conversation_id}-{step_index}`) and `parent_event_id`.
+- **Centralized Pre-Persistence Redaction**: Robust secret scrubbing (`cortex_engine.redaction`) redacting GitHub PATs, AI API keys (OpenAI, Anthropic), AWS credentials, Bearer JWTs, private keys, and passwords before storage.
+- **Fault-Isolated Hook Architecture**: Resilient hook execution ensuring logging failures never disrupt agent tool operations or emit malformed responses.
+- **CLI Trajectory Inspection**: Extended `cortex activity` CLI with `--conversation <id>`, `--step <idx>`, `--source`, `--status`, and `--json` filtering for formatted action timeline inspection.
+- **Comprehensive Test Suite**: Added 17 new observability and hook integration tests, bringing full test coverage to 154 passing tests across 19 test modules.
+
+### Security & Privacy Invariants
+- **Reasoning Boundary**: CORTEX captures observable tool actions and parameters only; private deliberations, hidden reasoning traces, and conversation transcripts are strictly excluded from storage.
+
+---
+
 ## [0.1.0] — 2026-09-01
 
 ### Added
