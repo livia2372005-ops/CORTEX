@@ -188,13 +188,19 @@ class CortexCLI:
                 "description": "Persistent project memory and evidence retrieval for coding Agents.",
                 "rules": ["rules/cortex-awareness.md"],
                 "skills": [
+                    "skills/cortex-usage",
                     "skills/cortex-memory",
                     "skills/cortex-review",
                     "skills/cortex-learning",
                 ],
                 "components": {
                     "rules": ["rules/cortex-awareness.md"],
-                    "skills": ["skills/cortex-memory", "skills/cortex-review", "skills/cortex-learning"],
+                    "skills": [
+                        "skills/cortex-usage",
+                        "skills/cortex-memory",
+                        "skills/cortex-review",
+                        "skills/cortex-learning",
+                    ],
                     "mcp_config": "mcp_config.json",
                     "hooks": "hooks.json",
                 },
@@ -272,6 +278,13 @@ CORTEX is active in this workspace to provide persistent project memory, event t
 
         # 7. Create skills directories and SKILL.md templates if missing
         skill_templates = {
+            "cortex-usage": """---
+name: cortex-usage
+description: General Agent usage protocol for CORTEX persistent memory, evidence retrieval, context compilation, and activity observability.
+---
+# CORTEX Usage Protocol for Agents
+Use CORTEX as an evidence, context compilation, and activity observability substrate. The consuming workspace remains authoritative for application source, tests, documentation, and reports. Never write application reports into CORTEX internal directories.
+""",
             "cortex-memory": """---
 name: cortex-memory
 description: Inspect and retrieve project memory, prior decisions, constraints, failures, lessons, and claims from CORTEX storage.
@@ -300,6 +313,13 @@ Use cortex_record_knowledge and cortex_record_event to persist durable engineeri
             s_file = s_dir / "SKILL.md"
             if not s_file.exists() or force:
                 s_file.write_text(content, encoding="utf-8")
+
+            # Also place in root .agents/skills/ if missing
+            root_s_dir = root_agents_dir / "skills" / skill_name
+            root_s_dir.mkdir(parents=True, exist_ok=True)
+            root_s_file = root_s_dir / "SKILL.md"
+            if not root_s_file.exists() or force:
+                root_s_file.write_text(content, encoding="utf-8")
 
         # Build initial indexes
         self.indexer.rebuild_from_canonical(self.storage)
