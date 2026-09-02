@@ -73,7 +73,7 @@ class TestPackagingBoundaries(unittest.TestCase):
 
         # User customizes plugin manifest
         manifest_path = self.workspace / ".agents" / "plugins" / "cortex" / "plugin.json"
-        custom_data = {"name": "cortex", "version": "0.3.0", "custom_key": "user_preserved_value"}
+        custom_data = {"name": "cortex", "version": "0.3.1", "custom_key": "user_preserved_value"}
         manifest_path.write_text(json.dumps(custom_data), encoding="utf-8")
 
         # Run init again without force

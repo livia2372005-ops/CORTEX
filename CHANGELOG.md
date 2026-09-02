@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.1] — 2026-09-02
+
+### Fixed
+- **Reliable TaskAnchor Propagation**: Fixed cross-process TaskAnchor resolution in Antigravity lifecycle hooks (`PreToolUse`/`PostToolUse`) so that observable tool telemetry deterministically attaches the active `anchor_id` when a valid workspace/conversation correlation exists.
+- **Robust `.cortex` Storage Resolution**: Implemented hierarchical path climbing (`find_cortex_dir`) across payload `workspacePaths`, `workspaceRoot`, `cwd`, and tool target file arguments to reliably locate project `.cortex` storage across separate hook processes.
+- **Cross-Platform Path Normalization**: Added `normalize_workspace_path` to handle Windows backward/forward slashes, case variations, and `file:///` URI schemes.
+- **Step Index `0` Preservation**: Fixed integer zero falsy evaluation bug where initial step 0 events lost their step indices.
+- **Multi-Key Payload Compatibility**: Expanded hook payload parser to seamlessly extract metadata across snake_case, camelCase, and nested `toolCall` payload variants.
+- **Strict Conversation Isolation**: Ensured hook events never cross-associate active anchors across differing concurrent conversations or separate workspace boundaries.
+
+---
+
 ## [0.3.0] — 2026-09-02
 
 ### Added
