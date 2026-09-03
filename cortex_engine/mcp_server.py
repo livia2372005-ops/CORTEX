@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .api import CortexAPI
+from .models import classify_cortex_interaction, extract_cortex_interaction_metadata
 from .storage import CortexStorage
 
 
@@ -479,7 +480,7 @@ class CortexMCPServer:
                     "protocolVersion": "2024-11-05",
                     "serverInfo": {
                         "name": "cortex-mcp",
-                        "version": "0.3.1",
+                        "version": "0.4.0",
                     },
                     "capabilities": {
                         "tools": {},
@@ -508,19 +509,26 @@ class CortexMCPServer:
             tool_name = params.get("name")
             args = params.get("arguments", {})
             start_t = time.perf_counter()
+            self.api._in_mcp_call = True
             try:
                 result_data = self._execute_tool(tool_name, args)
                 duration_ms = round((time.perf_counter() - start_t) * 1000.0, 2)
-                # Automatically record observable MCP tool invocation (skip list_activity to avoid noise)
-                if tool_name != "cortex_list_activity":
+                # Automatically record observable CORTEX MCP interaction trace
+                # Skip list_activity to avoid noise; skip start/end task since api.start_task/end_task already record task_start/task_end
+                if tool_name not in ("cortex_list_activity", "cortex_start_task", "cortex_end_task"):
                     try:
+                        domain, i_class = classify_cortex_interaction(tool_name)
+                        meta = extract_cortex_interaction_metadata(tool_name, args, result_data)
                         self.api.record_activity(
                             action_type="tool_call",
                             target=str(tool_name),
+                            tool_name=str(tool_name),
                             source="mcp",
                             status="success",
+                            activity_domain=domain,
+                            interaction_class=i_class,
                             duration_ms=duration_ms,
-                            metadata={"args_keys": list(args.keys())},
+                            metadata=meta,
                         )
                     except Exception:
                         pass
@@ -540,11 +548,15 @@ class CortexMCPServer:
             except ValueError as ve:
                 duration_ms = round((time.perf_counter() - start_t) * 1000.0, 2)
                 try:
+                    domain, i_class = classify_cortex_interaction(tool_name)
                     self.api.record_activity(
                         action_type="tool_call",
                         target=str(tool_name),
+                        tool_name=str(tool_name),
                         source="mcp",
                         status="error",
+                        activity_domain=domain,
+                        interaction_class=i_class,
                         duration_ms=duration_ms,
                         error_type="ValueError",
                         metadata={"error": str(ve)},
@@ -559,11 +571,15 @@ class CortexMCPServer:
             except Exception as e:
                 duration_ms = round((time.perf_counter() - start_t) * 1000.0, 2)
                 try:
+                    domain, i_class = classify_cortex_interaction(tool_name)
                     self.api.record_activity(
                         action_type="tool_call",
                         target=str(tool_name),
+                        tool_name=str(tool_name),
                         source="mcp",
                         status="error",
+                        activity_domain=domain,
+                        interaction_class=i_class,
                         duration_ms=duration_ms,
                         error_type=type(e).__name__,
                         metadata={"error": str(e)},
@@ -575,6 +591,8 @@ class CortexMCPServer:
                     "id": req_id,
                     "error": {"code": -32603, "message": f"Internal tool error: {str(e)}"},
                 }
+            finally:
+                self.api._in_mcp_call = False
 
         return {
             "jsonrpc": "2.0",

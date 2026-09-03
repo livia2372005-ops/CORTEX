@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .models import ActivityEvent, utc_now_iso
+from .models import ActivityEvent, classify_cortex_interaction, utc_now_iso
 from .redaction import redact_data, redact_text
 from .storage import CortexStorage, normalize_workspace_path
 
@@ -218,6 +218,8 @@ def process_hook_payload(event_type: str, payload_str: str) -> Dict[str, Any]:
         active_anchor = storage.get_active_task_anchor(conversation_id=conversation_id, workspace=workspace_str)
         anchor_id = active_anchor.anchor_id if active_anchor else None
 
+        activity_domain, interaction_class = classify_cortex_interaction(tool_name)
+
         if event_type == "pre":
             event_id = f"act-pre-{uuid.uuid4().hex[:8]}"
             act_event = ActivityEvent(
@@ -233,6 +235,8 @@ def process_hook_payload(event_type: str, payload_str: str) -> Dict[str, Any]:
                 target=target,
                 tool_name=tool_name,
                 status="started",
+                activity_domain=activity_domain,
+                interaction_class=interaction_class,
                 correlation_id=correlation_id,
                 metadata=sanitize_args_metadata(tool_args),
             )
@@ -261,6 +265,8 @@ def process_hook_payload(event_type: str, payload_str: str) -> Dict[str, Any]:
                 target=target,
                 tool_name=tool_name,
                 status=status,
+                activity_domain=activity_domain,
+                interaction_class=interaction_class,
                 correlation_id=correlation_id,
                 parent_event_id=f"act-pre-{correlation_id}" if correlation_id else None,
                 metadata=meta,

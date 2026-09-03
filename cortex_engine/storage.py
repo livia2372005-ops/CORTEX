@@ -322,6 +322,8 @@ class CortexStorage:
             target=sanitized_target,
             tool_name=sanitized_tool,
             status=activity.status,
+            activity_domain=activity.activity_domain,
+            interaction_class=activity.interaction_class,
             duration_ms=activity.duration_ms,
             parent_event_id=activity.parent_event_id,
             correlation_id=activity.correlation_id,
@@ -346,6 +348,8 @@ class CortexStorage:
         action_type: Optional[str] = None,
         source: Optional[str] = None,
         status: Optional[str] = None,
+        activity_domain: Optional[str] = None,
+        interaction_class: Optional[str] = None,
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         limit: Optional[int] = None,
@@ -383,6 +387,10 @@ class CortexStorage:
                         continue
                     if status and act.status != status:
                         continue
+                    if activity_domain and act.activity_domain != activity_domain:
+                        continue
+                    if interaction_class and act.interaction_class != interaction_class:
+                        continue
                     if start_time and act.timestamp < start_time:
                         continue
                     if end_time and act.timestamp > end_time:
@@ -396,6 +404,32 @@ class CortexStorage:
         if limit is not None and limit > 0:
             return activities[:limit] if offset > 0 else activities[-limit:]
         return activities
+
+    def read_cortex_activity(
+        self,
+        task_id: Optional[str] = None,
+        anchor_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        interaction_class: Optional[str] = None,
+        status: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> List[ActivityEvent]:
+        """Read activity events strictly within the CORTEX domain with optional class/task filtering."""
+        return self.read_activity(
+            task_id=task_id,
+            anchor_id=anchor_id,
+            conversation_id=conversation_id,
+            activity_domain="cortex",
+            interaction_class=interaction_class,
+            status=status,
+            start_time=start_time,
+            end_time=end_time,
+            limit=limit,
+            offset=offset,
+        )
 
     def get_activity(self, event_id: str) -> Optional[ActivityEvent]:
         """Retrieve a specific activity event by its event_id."""

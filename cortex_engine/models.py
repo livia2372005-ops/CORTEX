@@ -284,6 +284,8 @@ class ActivityEvent:
     target: str = ""  # resource or target e.g. "cortex_search", "src/auth.py", "git commit"
     tool_name: Optional[str] = None
     status: str = "success"  # success, error, pending, started, interrupted
+    activity_domain: Optional[str] = None  # cortex, external_tool, system
+    interaction_class: Optional[str] = None  # agent_memory, task_boundary, maintenance
     duration_ms: Optional[float] = None
     parent_event_id: Optional[str] = None
     correlation_id: Optional[str] = None
@@ -310,6 +312,8 @@ class ActivityEvent:
             target=data.get("target", ""),
             tool_name=data.get("tool_name"),
             status=data.get("status", "success"),
+            activity_domain=data.get("activity_domain"),
+            interaction_class=data.get("interaction_class"),
             duration_ms=data.get("duration_ms"),
             parent_event_id=data.get("parent_event_id"),
             correlation_id=data.get("correlation_id"),
@@ -317,3 +321,150 @@ class ActivityEvent:
             error_type=data.get("error_type"),
             schema_version=data.get("schema_version", "1.0.0"),
         )
+
+
+def classify_cortex_interaction(tool_or_op_name: str, action_type: str = "tool_call") -> tuple[str, Optional[str]]:
+    """Determine activity_domain and interaction_class for an operation or tool call.
+
+    Returns:
+        (activity_domain, interaction_class) where:
+        - activity_domain: "cortex", "external_tool", or "system"
+        - interaction_class: "agent_memory", "task_boundary", "maintenance", or None
+    """
+    raw_name = (tool_or_op_name or "").strip().lower()
+
+    # Check explicit task boundary action types first
+    if action_type in ("task_start", "task_end"):
+        return "cortex", "task_boundary"
+
+    # Normalize tool name by stripping standard prefixes
+    name = raw_name
+    for prefix in ("mcp_cortex_", "mcp_cortex.", "cortex_", "cortex."):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+
+    agent_memory_ops = {
+        "search", "get", "compile_context", "record_knowledge",
+        "promote_memory", "check_claim_freshness", "check_duplicates",
+        "archive_memory", "detect_candidates", "record_event",
+    }
+    task_boundary_ops = {
+        "start_task", "end_task", "task_start", "task_end",
+        "get_task", "list_tasks",
+    }
+    maintenance_ops = {
+        "status", "doctor", "reindex", "list_activity", "record_activity",
+    }
+
+    if name in agent_memory_ops:
+        return "cortex", "agent_memory"
+    elif name in task_boundary_ops:
+        return "cortex", "task_boundary"
+    elif name in maintenance_ops:
+        return "cortex", "maintenance"
+    elif raw_name.startswith("cortex") or "cortex" in raw_name:
+        return "cortex", "maintenance"
+    elif action_type == "system" or raw_name.startswith("system"):
+        return "system", None
+    else:
+        return "external_tool", None
+
+
+def extract_cortex_interaction_metadata(
+    tool_or_op_name: str,
+    args: dict[str, Any],
+    result: Any = None,
+) -> dict[str, Any]:
+    """Extract metrics-friendly, sanitized metadata for a CORTEX operation."""
+    from .redaction import redact_data, redact_text
+
+    norm_name = (tool_or_op_name or "").lower()
+    for prefix in ("mcp_cortex_", "mcp_cortex.", "cortex_", "cortex."):
+        if norm_name.startswith(prefix):
+            norm_name = norm_name[len(prefix):]
+            break
+
+    meta: dict[str, Any] = {}
+
+    if norm_name == "search":
+        if "query" in args and args["query"]:
+            meta["query"] = redact_text(str(args["query"]))
+        if isinstance(result, dict):
+            meta["candidate_count"] = result.get("count", len(result.get("results", [])))
+            if "policy" in result:
+                meta["policy"] = result["policy"]
+        elif isinstance(result, list):
+            meta["candidate_count"] = len(result)
+        if "category" in args and args["category"]:
+            meta["category"] = args["category"]
+
+    elif norm_name == "get":
+        if "id" in args and args["id"]:
+            meta["record_id"] = args["id"]
+        if isinstance(result, dict):
+            meta["found"] = result.get("found", True) if "found" in result else (result.get("id") is not None)
+        elif result is None:
+            meta["found"] = False
+
+    elif norm_name == "compile_context":
+        if "task" in args and args["task"]:
+            meta["task"] = redact_text(str(args["task"])[:100])
+        if isinstance(result, dict):
+            items = result.get("included_ids") or result.get("items") or []
+            meta["selected_count"] = len(items) if isinstance(items, list) else result.get("item_count")
+            ctx_text = result.get("compiled_text") or result.get("context") or ""
+            if isinstance(ctx_text, str) and ctx_text:
+                meta["char_count"] = len(ctx_text)
+                meta["token_estimate"] = result.get("total_tokens_estimate") or len(ctx_text.split())
+        elif "memory_ids" in args and isinstance(args["memory_ids"], list):
+            meta["selected_count"] = len(args["memory_ids"])
+
+    elif norm_name == "record_knowledge":
+        if "id" in args and args["id"]:
+            meta["record_id"] = args["id"]
+        elif isinstance(result, dict) and "persisted_id" in result:
+            meta["record_id"] = result["persisted_id"]
+        if "knowledge_type" in args:
+            meta["knowledge_type"] = args["knowledge_type"]
+
+    elif norm_name == "promote_memory":
+        candidate_id = args.get("candidate_id") or args.get("id")
+        if candidate_id:
+            meta["candidate_id"] = candidate_id
+        if isinstance(result, dict):
+            promoted_id = result.get("promoted_id") or result.get("id")
+            if promoted_id:
+                meta["resulting_record_id"] = promoted_id
+
+    elif norm_name == "check_claim_freshness":
+        if "id" in args and args["id"]:
+            meta["claim_id"] = args["id"]
+        if isinstance(result, dict):
+            meta["classification"] = result.get("status") or result.get("freshness") or result.get("result")
+
+    elif norm_name == "check_duplicates":
+        if "title" in args and args["title"]:
+            meta["title"] = redact_text(str(args["title"]))
+        if isinstance(result, list):
+            meta["match_count"] = len(result)
+
+    elif norm_name == "archive_memory":
+        if "id" in args and args["id"]:
+            meta["record_id"] = args["id"]
+        if "reason" in args and args["reason"]:
+            meta["reason"] = redact_text(str(args["reason"]))
+
+    elif norm_name in ("start_task", "task_start"):
+        if "label" in args or "task_label" in args:
+            meta["task_label"] = redact_text(str(args.get("label") or args.get("task_label")))
+        if isinstance(result, dict) and "anchor_id" in result:
+            meta["anchor_id"] = result["anchor_id"]
+
+    elif norm_name in ("end_task", "task_end"):
+        if "anchor_id" in args:
+            meta["anchor_id"] = args["anchor_id"]
+        if "status" in args:
+            meta["task_status"] = args["status"]
+
+    return redact_data(meta)

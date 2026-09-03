@@ -558,6 +558,8 @@ Use cortex_record_knowledge and cortex_record_event to persist durable engineeri
         action_type: Optional[str] = None,
         source: Optional[str] = None,
         status: Optional[str] = None,
+        activity_domain: Optional[str] = None,
+        interaction_class: Optional[str] = None,
         last: int = 50,
     ) -> List[Dict[str, Any]]:
         """List recent canonical activity events."""
@@ -570,12 +572,20 @@ Use cortex_record_knowledge and cortex_record_event to persist durable engineeri
             action_type=action_type,
             source=source,
             status=status,
+            activity_domain=activity_domain,
+            interaction_class=interaction_class,
             limit=last,
         )
 
 
 def main(args: Optional[List[str]] = None) -> int:
     """Entry point for CORTEX CLI commands."""
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     parser = argparse.ArgumentParser(
         prog="cortex",
         description="CORTEX: Persistent project memory and evidence retrieval engine for coding Agents.",
@@ -661,6 +671,9 @@ def main(args: Optional[List[str]] = None) -> int:
     activity_parser.add_argument("--status", type=str, default=None, help="Filter by status (success, error, started)")
     activity_parser.add_argument("--last", type=int, default=50, help="Number of recent activities to show (default: 50)")
     activity_parser.add_argument("--json", action="store_true", help="Output raw JSON format")
+    activity_parser.add_argument("--cortex", action="store_true", help="Filter strictly for CORTEX interaction events (exclude external tools)")
+    activity_parser.add_argument("--agent-memory", action="store_true", dest="agent_memory", help="Filter for Agent Memory interactions (search, get, compile, record, promote, freshness)")
+    activity_parser.add_argument("--maintenance", action="store_true", help="Filter for CORTEX maintenance/diagnostic operations (doctor, reindex, status)")
 
     parsed = parser.parse_args(args)
 
@@ -808,6 +821,9 @@ def main(args: Optional[List[str]] = None) -> int:
 
     elif parsed.command == "activity":
         target_task = parsed.anchor or parsed.task
+        act_domain = "cortex" if (parsed.cortex or parsed.agent_memory or parsed.maintenance) else None
+        int_class = "agent_memory" if parsed.agent_memory else ("maintenance" if parsed.maintenance else None)
+
         acts = cli.cmd_activity(
             task_id=target_task,
             anchor_id=target_task,
@@ -817,10 +833,89 @@ def main(args: Optional[List[str]] = None) -> int:
             action_type=parsed.type,
             source=parsed.source,
             status=parsed.status,
+            activity_domain=act_domain,
+            interaction_class=int_class,
             last=parsed.last,
         )
         if parsed.json:
             print(json.dumps(acts, indent=2, ensure_ascii=False))
+            return 0
+
+        # If --cortex (or --agent-memory/--maintenance) is specified, show the clean flow view
+        if parsed.cortex or parsed.agent_memory or parsed.maintenance:
+            filter_parts = []
+            if target_task:
+                filter_parts.append(f"task '{target_task}'")
+            if parsed.conversation:
+                filter_parts.append(f"conversation '{parsed.conversation}'")
+            if parsed.agent_memory:
+                filter_parts.append("agent_memory only")
+            elif parsed.maintenance:
+                filter_parts.append("maintenance only")
+            header_suffix = f" for {', '.join(filter_parts)}" if filter_parts else ""
+
+            print(f"\n=== CORTEX Interaction Trace ({len(acts)} events){header_suffix} ===")
+            if not acts:
+                print("No CORTEX interaction records found.")
+            for idx, a in enumerate(acts):
+                dur = f" ({a['duration_ms']}ms)" if a.get("duration_ms") is not None else ""
+                meta = a.get("metadata") or {}
+                atype = a.get("action_type", "")
+                tname = (a.get("tool_name") or a.get("target") or "").lower()
+
+                if atype == "task_start":
+                    tlabel = meta.get("task_label") or a.get("target") or "Task"
+                    aid_str = f" (anchor: {a['anchor_id']})" if a.get("anchor_id") else ""
+                    node_title = f"[TASK START] {tlabel}{aid_str}"
+                elif atype == "task_end":
+                    astat = meta.get("task_status") or a.get("status") or "completed"
+                    aid_str = f" (anchor: {a['anchor_id']})" if a.get("anchor_id") else ""
+                    node_title = f"[TASK END] status: {astat}{aid_str}"
+                elif "search" in tname:
+                    q = meta.get("query", "")
+                    cnt = meta.get("candidate_count", 0)
+                    pol = meta.get("policy", "hybrid")
+                    node_title = f"[CORTEX SEARCH] query: \"{q}\" | {cnt} candidates ({pol}){dur}"
+                elif "get" in tname:
+                    rid = meta.get("record_id") or a.get("target")
+                    fnd = meta.get("found", True)
+                    node_title = f"[CORTEX GET] record: {rid} (found: {fnd}){dur}"
+                elif "compile_context" in tname:
+                    tsk = meta.get("task", "")
+                    scnt = meta.get("selected_count", 0)
+                    tok = meta.get("token_estimate", 0)
+                    node_title = f"[CORTEX COMPILE] task: \"{tsk}\" | {scnt} records (~{tok} tokens){dur}"
+                elif "record_knowledge" in tname:
+                    rid = meta.get("record_id") or a.get("target")
+                    ktype = meta.get("knowledge_type", "knowledge")
+                    node_title = f"[CORTEX RECORD] record: {rid} (type: {ktype}){dur}"
+                elif "freshness" in tname or "check_claim" in tname:
+                    cid = meta.get("claim_id") or a.get("target")
+                    cclass = meta.get("classification", "checked")
+                    node_title = f"[CORTEX FRESHNESS] claim: {cid} (status: {cclass}){dur}"
+                elif "promote" in tname:
+                    cand = meta.get("candidate_id") or a.get("target")
+                    res_id = meta.get("resulting_record_id", "")
+                    arrow = f" -> {res_id}" if res_id else ""
+                    node_title = f"[CORTEX PROMOTE] candidate: {cand}{arrow}{dur}"
+                elif "duplicate" in tname:
+                    mcnt = meta.get("match_count", 0)
+                    node_title = f"[CORTEX CHECK DUPLICATES] {mcnt} matches{dur}"
+                elif "archive" in tname:
+                    rid = meta.get("record_id") or a.get("target")
+                    node_title = f"[CORTEX ARCHIVE] record: {rid}{dur}"
+                else:
+                    disp_name = a.get("tool_name") or atype.upper()
+                    node_title = f"[CORTEX {disp_name}] {a.get('target', '')}{dur}"
+
+                print(node_title)
+                if idx < len(acts) - 1:
+                    try:
+                        print("  ↓")
+                    except UnicodeEncodeError:
+                        print("  |")
+                        print("  v")
+            print("=== End of CORTEX Interaction Trace ===\n")
             return 0
 
         filter_parts = []

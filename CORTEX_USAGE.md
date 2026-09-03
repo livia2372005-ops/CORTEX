@@ -90,6 +90,7 @@ Apply selected knowledge & verify against current project state
 - **`TaskAnchor`**: Explicit engineering task boundary (`cortex task start --label "..."` / `cortex_start_task`).
 - **Prompt Hash**: When a prompt is supplied, only a deterministic SHA-256 fingerprint (`prompt_hash`) is stored; raw user prompts are never stored by default.
 - **Activity Log**: Records observable tool calls, commands, results, and execution timing for trajectory reconstruction.
+- **Interaction Trace**: CORTEX operations are automatically recorded under `activity_domain = "cortex"` with structured metrics. Inspect memory flow using `cortex activity --cortex --task <anchor_id>` or `--agent-memory`.
 - **Telemetry Boundary**: Activity telemetry is an audit log, not durable project knowledge and not private reasoning.
 
 ---

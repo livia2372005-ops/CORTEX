@@ -46,6 +46,17 @@ SENSITIVE_KEY_NAMES: Set[str] = {
     "client_secret",
 }
 
+SAFE_METRIC_KEYS: Set[str] = {
+    "token_estimate",
+    "tokens_estimate",
+    "total_tokens",
+    "total_tokens_estimate",
+    "memory_tokens",
+    "memory_tokens_estimate",
+    "token_count",
+    "tokens",
+}
+
 
 def redact_text(text: str) -> str:
     """Sanitize and replace detected secrets in raw string content."""
@@ -73,8 +84,11 @@ def redact_data(data: Any, max_depth: int = 10) -> Any:
         cleaned_dict: Dict[str, Any] = {}
         for k, v in data.items():
             key_str = str(k).lower()
+            # Exempt metric counts from being falsely redacted as auth secrets
+            if key_str in SAFE_METRIC_KEYS:
+                cleaned_dict[k] = redact_data(v, max_depth=max_depth - 1)
             # If the dictionary key itself matches a sensitive name, redact its entire value
-            if any(sensitive in key_str for sensitive in SENSITIVE_KEY_NAMES):
+            elif any(sensitive in key_str for sensitive in SENSITIVE_KEY_NAMES):
                 cleaned_dict[k] = "[REDACTED]"
             else:
                 cleaned_dict[k] = redact_data(v, max_depth=max_depth - 1)

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.0] — 2026-09-03
+
+### Added
+- **Cortex Interaction Trace**: First-class semantic categorization of activity telemetry into `activity_domain` (`cortex`, `external_tool`, `system`) and `interaction_class` (`agent_memory`, `task_boundary`, `maintenance`).
+- **Semantic Activity Classification**: Deterministic taxonomy distinguishing core Agent memory retrieval/mutations, task boundaries, and administrative/maintenance diagnostics.
+- **Automatic CORTEX Interaction Telemetry**: Native CORTEX operations automatically record telemetry directly from MCP and Python API calls without requiring a secondary logging invocation.
+- **Single-Trace De-Duplication**: Context-aware suppression (`_in_mcp_call`) eliminating double-counting between MCP server handlers and underlying API implementations.
+- **Metrics-Friendly Metadata**: Structured execution metadata across core operations (`query`, `candidate_count`, `policy`, `record_id`, `found`, `task`, `selected_count`, `char_count`, `token_estimate`, `claim_id`, `classification`).
+- **Experiment-Oriented CLI Querying**: Added filter flags (`cortex activity --cortex`, `--agent-memory`, `--maintenance`, `--json`) and clean transition flow visualization (`TASK` $\rightarrow$ `SEARCH` $\rightarrow$ `GET` $\rightarrow$ `COMPILE` $\rightarrow$ `RECORD`).
+- **Programmatic API Surface**: Added `CortexAPI.list_cortex_activity` and `CortexStorage.read_cortex_activity` for direct interaction trace queries.
+- **Redaction Guardrails**: Added `SAFE_METRIC_KEYS` exemption in `redact_data` preserving token metrics while rigorously redacting secrets, credentials, and tokens.
+- **Full Backward Compatibility**: Historical ActivityEvents missing new fields load safely with `None` values without breaking queries or serialization.
+
+---
+
 ## [0.3.1] — 2026-09-02
 
 ### Fixed

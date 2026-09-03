@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import uuid
 from pathlib import Path
 from typing import Any, List, Optional
@@ -20,6 +21,8 @@ from .models import (
     RoleContext,
     RoleResult,
     TaskAnchor,
+    classify_cortex_interaction,
+    extract_cortex_interaction_metadata,
     utc_now_iso,
 )
 from .redaction import compute_prompt_hash, redact_data
@@ -50,6 +53,7 @@ class CortexAPI:
         self.compiler = compiler or ContextCompiler(storage=self.storage)
         self.router = router or HybridRetrievalRouter(storage=self.storage, indexer=self.indexer)
         self.lifecycle = lifecycle or MemoryLifecycleManager(storage=self.storage, indexer=self.indexer)
+        self._in_mcp_call: bool = False
 
     def record_event(
         self,
@@ -90,8 +94,10 @@ class CortexAPI:
         affects: Optional[List[str]] = None,
         evidence: Optional[List[dict[str, Any]]] = None,
         task_id: Optional[str] = None,
+        record_trace: bool = True,
     ) -> str:
         """Record a persistent knowledge item in canonical files and derived index."""
+        start_t = time.perf_counter()
         item = Knowledge(
             id=id,
             type=knowledge_type,
@@ -110,6 +116,8 @@ class CortexAPI:
         except Exception:
             pass  # Indexing error must never break canonical write
 
+        duration_ms = round((time.perf_counter() - start_t) * 1000.0, 2)
+
         # Record observable knowledge capture event
         self.record_event(
             event_type="knowledge_recorded",
@@ -118,6 +126,26 @@ class CortexAPI:
             task_id=task_id,
             provenance=provenance,
         )
+
+        # Automatic CORTEX interaction trace (unless called inside MCP server)
+        if record_trace and not self._in_mcp_call:
+            meta = extract_cortex_interaction_metadata(
+                "cortex_record_knowledge",
+                {"id": id, "knowledge_type": knowledge_type, "title": title},
+                {"persisted_id": persisted_id},
+            )
+            self.record_activity(
+                action_type="tool_call",
+                target=f"cortex_record_knowledge({id})",
+                tool_name="cortex_record_knowledge",
+                status="success",
+                activity_domain="cortex",
+                interaction_class="agent_memory",
+                task_id=task_id,
+                duration_ms=duration_ms,
+                metadata=meta,
+            )
+
         return persisted_id
 
     def record_claim(
@@ -169,9 +197,34 @@ class CortexAPI:
         category: Optional[str] = None,
         task_id: Optional[str] = None,
         role: str = "MEMORY",
+        record_trace: bool = True,
     ) -> Optional[dict[str, Any]]:
         """Retrieve a specific knowledge record by ID."""
+        start_t = time.perf_counter()
         item = self.storage.read_knowledge(id, category)
+        duration_ms = round((time.perf_counter() - start_t) * 1000.0, 2)
+
+        res_dict = item.to_dict() if item is not None else None
+
+        # Automatic CORTEX interaction trace (unless called inside MCP server)
+        if record_trace and not self._in_mcp_call:
+            meta = extract_cortex_interaction_metadata(
+                "cortex_get",
+                {"id": id, "category": category},
+                res_dict,
+            )
+            self.record_activity(
+                action_type="tool_call",
+                target=f"cortex_get({id})",
+                tool_name="cortex_get",
+                status="success" if item is not None else "error",
+                activity_domain="cortex",
+                interaction_class="agent_memory",
+                task_id=task_id,
+                duration_ms=duration_ms,
+                metadata=meta,
+            )
+
         if item is not None:
             self.record_event(
                 event_type="memory_get",
@@ -179,7 +232,7 @@ class CortexAPI:
                 payload={"id": id, "found": True, "type": item.type},
                 task_id=task_id,
             )
-            return item.to_dict()
+            return res_dict
         else:
             self.record_event(
                 event_type="memory_get",
@@ -200,8 +253,10 @@ class CortexAPI:
         workspace_root: Optional[str | Path] = None,
         role: str = "REVIEW",
         task_id: Optional[str] = None,
+        record_trace: bool = True,
     ) -> Optional[dict[str, Any]]:
         """Evaluate freshness of a claim against current codebase artifacts."""
+        start_t = time.perf_counter()
         claim = self.storage.read_claim(id)
         if claim is None:
             return None
@@ -209,6 +264,7 @@ class CortexAPI:
         from .freshness import evaluate_claim_freshness
         root_dir = workspace_root or self.storage.cortex_dir.parent
         report = evaluate_claim_freshness(claim, workspace_root=root_dir)
+        duration_ms = round((time.perf_counter() - start_t) * 1000.0, 2)
 
         # Update stored claim status if changed (e.g. verified -> affected)
         if report["status"] != claim.status:
@@ -239,6 +295,26 @@ class CortexAPI:
             },
             task_id=task_id,
         )
+
+        # Automatic CORTEX interaction trace (unless called inside MCP server)
+        if record_trace and not self._in_mcp_call:
+            meta = extract_cortex_interaction_metadata(
+                "cortex_check_claim_freshness",
+                {"id": id},
+                report,
+            )
+            self.record_activity(
+                action_type="tool_call",
+                target=f"cortex_check_claim_freshness({id})",
+                tool_name="cortex_check_claim_freshness",
+                status="success",
+                activity_domain="cortex",
+                interaction_class="agent_memory",
+                task_id=task_id,
+                duration_ms=duration_ms,
+                metadata=meta,
+            )
+
         return report
 
     def search(
@@ -249,8 +325,10 @@ class CortexAPI:
         task_id: Optional[str] = None,
         role: str = "MEMORY",
         policy: str = "hybrid",
+        record_trace: bool = True,
     ) -> dict[str, Any]:
         """Search knowledge using deterministic Hybrid Retrieval (FTS + Lexical + Semantic fallback)."""
+        start_t = time.perf_counter()
         routed_data = self.router.search(query=query, policy=policy, limit=limit)
         matched_items = routed_data.get("results", [])
 
@@ -271,6 +349,8 @@ class CortexAPI:
                     matched_items.append(item.to_dict())
                     if len(matched_items) >= limit:
                         break
+
+        duration_ms = round((time.perf_counter() - start_t) * 1000.0, 2)
 
         result_payload = {
             "query": query,
@@ -294,6 +374,25 @@ class CortexAPI:
             task_id=task_id,
         )
 
+        # Automatic CORTEX interaction trace (unless called inside MCP server)
+        if record_trace and not self._in_mcp_call:
+            meta = extract_cortex_interaction_metadata(
+                "cortex_search",
+                {"query": query, "category": category, "policy": policy},
+                result_payload,
+            )
+            self.record_activity(
+                action_type="tool_call",
+                target=f"cortex_search({query[:50]})",
+                tool_name="cortex_search",
+                status="success",
+                activity_domain="cortex",
+                interaction_class="agent_memory",
+                task_id=task_id,
+                duration_ms=duration_ms,
+                metadata=meta,
+            )
+
         return result_payload
 
     def compile_context(
@@ -304,8 +403,10 @@ class CortexAPI:
         role: str = "APP",
         task_id: Optional[str] = None,
         layout: str = "layout_4",
+        record_trace: bool = True,
     ) -> Dict[str, Any]:
         """Compile selected memory records into a structured, bounded context for the Agent."""
+        start_t = time.perf_counter()
         compiled = self.compiler.compile(
             task=task,
             memory_ids=memory_ids,
@@ -314,6 +415,8 @@ class CortexAPI:
             task_id=task_id,
             layout=layout,
         )
+        duration_ms = round((time.perf_counter() - start_t) * 1000.0, 2)
+        res_dict = compiled.to_dict()
 
         # Record observable context compilation event
         self.record_event(
@@ -329,7 +432,27 @@ class CortexAPI:
             },
             task_id=task_id,
         )
-        return compiled.to_dict()
+
+        # Automatic CORTEX interaction trace (unless called inside MCP server)
+        if record_trace and not self._in_mcp_call:
+            meta = extract_cortex_interaction_metadata(
+                "cortex_compile_context",
+                {"task": task, "memory_ids": memory_ids},
+                res_dict,
+            )
+            self.record_activity(
+                action_type="tool_call",
+                target=f"cortex_compile_context({task[:50]})",
+                tool_name="cortex_compile_context",
+                status="success",
+                activity_domain="cortex",
+                interaction_class="agent_memory",
+                task_id=task_id,
+                duration_ms=duration_ms,
+                metadata=meta,
+            )
+
+        return res_dict
 
     def retrieve_context(
         self,
@@ -580,6 +703,8 @@ class CortexAPI:
             conversation_id=conversation_id,
             source=source,
             status="started",
+            activity_domain="cortex",
+            interaction_class="task_boundary",
             metadata={"task_label": clean_label, "prompt_hash": p_hash} if p_hash or clean_label else {},
         )
         return anchor.to_dict()
@@ -608,6 +733,8 @@ class CortexAPI:
             conversation_id=updated.conversation_id,
             source=updated.source,
             status=status,
+            activity_domain="cortex",
+            interaction_class="task_boundary",
             metadata=redact_data(metadata) if metadata else {},
         )
         return updated.to_dict()
@@ -648,6 +775,8 @@ class CortexAPI:
         actor: str = "agent",
         source: str = "python_api",
         tool_name: Optional[str] = None,
+        activity_domain: Optional[str] = None,
+        interaction_class: Optional[str] = None,
         duration_ms: Optional[float] = None,
         parent_event_id: Optional[str] = None,
         correlation_id: Optional[str] = None,
@@ -664,6 +793,11 @@ class CortexAPI:
             if active:
                 resolved_anchor = active.anchor_id
 
+        # Determine domain and class if not supplied
+        inferred_domain, inferred_class = classify_cortex_interaction(tool_name or target, action_type)
+        final_domain = activity_domain or inferred_domain
+        final_class = interaction_class if interaction_class is not None else inferred_class
+
         act_event = ActivityEvent(
             event_id=event_id,
             timestamp=utc_now_iso(),
@@ -678,6 +812,8 @@ class CortexAPI:
             target=target,
             tool_name=tool_name,
             status=status,
+            activity_domain=final_domain,
+            interaction_class=final_class,
             duration_ms=duration_ms,
             parent_event_id=parent_event_id,
             correlation_id=correlation_id,
@@ -698,6 +834,8 @@ class CortexAPI:
         action_type: Optional[str] = None,
         source: Optional[str] = None,
         status: Optional[str] = None,
+        activity_domain: Optional[str] = None,
+        interaction_class: Optional[str] = None,
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         limit: Optional[int] = 50,
@@ -713,6 +851,34 @@ class CortexAPI:
             tool_name=tool_name,
             action_type=action_type,
             source=source,
+            status=status,
+            activity_domain=activity_domain,
+            interaction_class=interaction_class,
+            start_time=start_time,
+            end_time=end_time,
+            limit=limit,
+            offset=offset,
+        )
+        return [e.to_dict() for e in events]
+
+    def list_cortex_activity(
+        self,
+        task_id: Optional[str] = None,
+        anchor_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        interaction_class: Optional[str] = None,
+        status: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        limit: Optional[int] = 50,
+        offset: int = 0,
+    ) -> List[dict[str, Any]]:
+        """Programmatic query surface for CORTEX interaction traces."""
+        events = self.storage.read_cortex_activity(
+            task_id=task_id,
+            anchor_id=anchor_id,
+            conversation_id=conversation_id,
+            interaction_class=interaction_class,
             status=status,
             start_time=start_time,
             end_time=end_time,
